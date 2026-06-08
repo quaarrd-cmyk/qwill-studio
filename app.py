@@ -1,58 +1,63 @@
 import streamlit as st
-import google.generativeai as genai
-import os
+import groq
+import fal_client
+import time
 
-# Configure the page layout for mobile compatibility
-st.set_page_config(page_title="Qwill AI Studio", page_icon="📝", layout="centered")
+st.set_page_config(
+    page_title="Qwill AI",
+    page_icon="✨",
+    layout="centered"
+)
 
-st.title("📝 Qwill AI Studio")
-st.caption("Welcome back to your workspace.")
+# Splash Screen
+if "splash_done" not in st.session_state:
+    st.session_state.splash_done = False
 
-# Retrieve the API key securely from Streamlit's secrets manager
-api_key = st.secrets.get("GEMINI_API_KEY")
+if not st.session_state.splash_done:
+    st.image("Qwill AI logo .jpg", width=200)
+    st.markdown("<h1 style='text-align:center'>Qwill AI</h1>", unsafe_allow_html=True)
+    st.image("Quaarrd logo.jpg", width=150)
+    time.sleep(2)
+    st.session_state.splash_done = True
+    st.rerun()
 
-if not api_key:
-    st.error("Missing Gemini API Key. Please add 'GEMINI_API_KEY' to your Streamlit Secrets.")
-else:
-    # Initialize the Gemini client
-    genai.configure(api_key=api_key)
-    
-    # Initialize chat history in session state if it doesn't exist
+# API Keys
+groq_key = st.secrets["GROQ_API_KEY"]
+fal_key = st.secrets["FAL_API_KEY"]
+
+# Main App
+tab1, tab2 = st.tabs(["💬 Chat", "🎨 Image"])
+
+with tab1:
+    st.subheader("Chat with Qwill")
     if "messages" not in st.session_state:
-        st.session_state.messages = [
-            {"role": "assistant", "content": "Greetings. I am Qwill. Your workspace is ready—what shall we develop today?"}
-        ]
-
-    # Display existing chat history
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    # Handle user chat input
-    if user_input := st.chat_input("Speak with Qwill..."):
-        # Display user message
-        st.session_state.messages.append({"role": "user", "content": user_input})
+        st.session_state.messages = []
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+    if prompt := st.chat_input("Say something..."):
+        st.session_state.messages.append({"role":"user","content":prompt})
         with st.chat_message("user"):
-            st.markdown(user_input)
+            st.markdown(prompt)
+        client = groq.Groq(api_key=groq_key)
+        response = client.chat.completions.create(
+            model="qwen-qwq-32b",
+            messages=st.session_state.messages
+        )
+        reply = response.choices[0].message.content
+        st.session_state.messages.append({"role":"assistant","content":reply})
+        with st.chat_message("assistant"):
+            st.markdown(reply)
 
-        # Generate response from Gemini
-        try:
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            
-            # Format history for the model
-            formatted_history = []
-            for msg in st.session_state.messages[:-1]:
-                role = "user" if msg["role"] == "user" else "model"
-                formatted_history.append({"role": role, "parts": [msg["content"]]})
-            
-            chat = model.start_chat(history=formatted_history)
-            response = chat.send_message(user_input)
-            
-            # Display assistant response
-            with st.chat_message("assistant"):
-                st.markdown(response.text)
-            st.session_state.messages.append({"role": "assistant", "content": response.text})
-            
-        except Exception as e:
-            st.error(f"An error occurred: {str(e)}")
-  
+with tab2:
+    st.subheader("Generate with Flux")
+    prompt = st.text_input("Describe your image...")
+    if st.button("Generate"):
+        import os
+        os.environ["FAL_KEY"] = fal_key
+        with st.spinner("Creating..."):
+            result = fal_client.subscribe(
+                "fal-ai/flux/schnell",
+                arguments={"prompt": prompt}
+            )
+            st.image(result["images"][0]["url"])
