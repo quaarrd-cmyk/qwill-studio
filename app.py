@@ -6,6 +6,7 @@ import os
 import json
 import base64
 import requests
+import re
 
 st.set_page_config(
     page_title="Qwill AI",
@@ -22,6 +23,7 @@ if not st.session_state.splash_done:
     with col2:
         st.image("qwill_logo.jpg", width=200)
         st.markdown("<h1 style='text-align:center'>Qwill AI</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align:center'>by</p>", unsafe_allow_html=True)
         st.image("Quaarrd logo.jpg", width=150)
     time.sleep(2)
     st.session_state.splash_done = True
@@ -30,6 +32,12 @@ if not st.session_state.splash_done:
 # API Keys
 groq_key = st.secrets["GROQ_API_KEY"]
 fal_key = st.secrets["FAL_API_KEY"]
+
+# System prompt
+SYSTEM_PROMPT = {
+    "role": "system",
+    "content": "You are Qwill, a helpful and friendly AI assistant created by Quaarrd. Never say you are Qwen or any other AI. You are Qwill. Be warm, helpful and concise."
+}
 
 # Chat history functions
 CHAT_FILE = "chat_history.json"
@@ -43,6 +51,9 @@ def load_chat():
 def save_chat(messages):
     with open(CHAT_FILE, "w") as f:
         json.dump(messages, f)
+
+def remove_think_tags(text):
+    return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
 # Main App
 tab1, tab2 = st.tabs(["💬 Chat", "🎨 Image"])
@@ -65,9 +76,10 @@ with tab1:
         client = groq.Groq(api_key=groq_key)
         response = client.chat.completions.create(
             model="qwen/qwen3-32b",
-            messages=st.session_state.messages
+            messages=[SYSTEM_PROMPT] + st.session_state.messages
         )
-        reply = response.choices[0].message.content
+        raw_reply = response.choices[0].message.content
+        reply = remove_think_tags(raw_reply)
         st.session_state.messages.append({"role":"assistant","content":reply})
         save_chat(st.session_state.messages)
         with st.chat_message("assistant"):
