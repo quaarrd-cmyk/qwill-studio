@@ -20,7 +20,7 @@ if "splash_done" not in st.session_state:
 if not st.session_state.splash_done:
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
-        st.image("Qwill AI logo .jpg", width=200)
+        st.image("qwill_logo.jpg", width=200)
         st.markdown("<h1 style='text-align:center'>Qwill AI</h1>", unsafe_allow_html=True)
         st.image("Quaarrd logo.jpg", width=150)
     time.sleep(2)
@@ -99,7 +99,6 @@ with tab2:
         b64 = base64.b64encode(image_data).decode()
         href = f'<a href="data:image/png;base64,{b64}" download="qwill_image.png">📥 Download Image</a>'
         st.markdown(href, unsafe_allow_html=True)
-
         st.markdown("---")
         st.markdown("**Not satisfied? Refine it:**")
         refinement = st.text_input("What would you like to change?", key="refine_prompt")
