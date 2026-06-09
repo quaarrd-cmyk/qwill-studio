@@ -64,7 +64,7 @@ with tab1:
             st.markdown(prompt)
         client = groq.Groq(api_key=groq_key)
         response = client.chat.completions.create(
-            model="qwen-qwq-32b",
+            model="qwen/qwen3-32b",
             messages=st.session_state.messages
         )
         reply = response.choices[0].message.content
