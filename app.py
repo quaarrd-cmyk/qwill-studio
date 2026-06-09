@@ -21,10 +21,10 @@ if "splash_done" not in st.session_state:
 if not st.session_state.splash_done:
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
-        st.image("qwill_logo.jpg", width=200)
-        st.markdown("<h1 style='text-align:center'>Qwill AI</h1>", unsafe_allow_html=True)
+        st.image("qwill_logo.jpg", width=150)
+        st.markdown("<h2 style='text-align:center'>Qwill AI</h2>", unsafe_allow_html=True)
         st.markdown("<p style='text-align:center'>by</p>", unsafe_allow_html=True)
-        st.image("Quaarrd logo.jpg", width=150)
+        st.image("Quaarrd logo.jpg", width=120)
     time.sleep(2)
     st.session_state.splash_done = True
     st.rerun()
@@ -37,6 +37,11 @@ fal_key = st.secrets["FAL_API_KEY"]
 SYSTEM_PROMPT = {
     "role": "system",
     "content": "You are Qwill, a helpful and friendly AI assistant created by Quaarrd. Never say you are Qwen or any other AI. You are Qwill. Be warm, helpful and concise."
+}
+
+IMAGE_SYSTEM_PROMPT = {
+    "role": "system",
+    "content": "You are Qwill, an AI image assistant by Quaarrd. Help the user develop their image idea through friendly conversation. Ask questions to understand exactly what they want — style, colors, mood, details. When the user seems ready, say 'Great! I will generate that now.' and then output their final image prompt inside these tags: [PROMPT]detailed image description here[/PROMPT]. Only output the PROMPT tags when the user is ready to generate."
 }
 
 # Chat history functions
@@ -54,6 +59,12 @@ def save_chat(messages):
 
 def remove_think_tags(text):
     return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
+def extract_prompt(text):
+    match = re.search(r'\[PROMPT\](.*?)\[/PROMPT\]', text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return None
 
 # Main App
 tab1, tab2 = st.tabs(["💬 Chat", "🎨 Image"])
@@ -86,24 +97,25 @@ with tab1:
             st.markdown(reply)
 
 with tab2:
-    st.subheader("Generate with Flux")
-    if "last_prompt" not in st.session_state:
-        st.session_state.last_prompt = ""
+    st.subheader("🎨 Image Studio")
+    st.caption("Tell Qwill what you want to create and we'll build it together!")
+
+    if "image_messages" not in st.session_state:
+        st.session_state.image_messages = []
     if "last_image_url" not in st.session_state:
         st.session_state.last_image_url = ""
+    if "last_prompt" not in st.session_state:
+        st.session_state.last_prompt = ""
 
-    prompt = st.text_input("Describe your image...", key="main_prompt")
+    if st.button("🗑️ Clear Image Chat"):
+        st.session_state.image_messages = []
+        st.session_state.last_image_url = ""
+        st.session_state.last_prompt = ""
+        st.rerun()
 
-    if st.button("✨ Generate"):
-        os.environ["FAL_KEY"] = fal_key
-        with st.spinner("Creating your image..."):
-            result = fal_client.subscribe(
-                "fal-ai/flux/schnell",
-                arguments={"prompt": prompt}
-            )
-            image_url = result["images"][0]["url"]
-            st.session_state.last_prompt = prompt
-            st.session_state.last_image_url = image_url
+    for msg in st.session_state.image_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
     if st.session_state.last_image_url:
         st.image(st.session_state.last_image_url)
@@ -111,19 +123,38 @@ with tab2:
         b64 = base64.b64encode(image_data).decode()
         href = f'<a href="data:image/png;base64,{b64}" download="qwill_image.png">📥 Download Image</a>'
         st.markdown(href, unsafe_allow_html=True)
-        st.markdown("---")
-        st.markdown("**Not satisfied? Refine it:**")
-        refinement = st.text_input("What would you like to change?", key="refine_prompt")
-        if st.button("🔄 Regenerate"):
-            if refinement:
-                new_prompt = st.session_state.last_prompt + ", " + refinement
-                os.environ["FAL_KEY"] = fal_key
-                with st.spinner("Refining your image..."):
+
+    if image_prompt := st.chat_input("Describe what you want to create...", key="image_input"):
+        st.session_state.image_messages.append({"role":"user","content":image_prompt})
+        with st.chat_message("user"):
+            st.markdown(image_prompt)
+
+        client = groq.Groq(api_key=groq_key)
+        response = client.chat.completions.create(
+            model="qwen/qwen3-32b",
+            messages=[IMAGE_SYSTEM_PROMPT] + st.session_state.image_messages
+        )
+        raw_reply = response.choices[0].message.content
+        reply = remove_think_tags(raw_reply)
+
+        final_prompt = extract_prompt(reply)
+        clean_reply = re.sub(r'\[PROMPT\].*?\[/PROMPT\]', '', reply, flags=re.DOTALL).strip()
+
+        st.session_state.image_messages.append({"role":"assistant","content":clean_reply})
+        with st.chat_message("assistant"):
+            st.markdown(clean_reply)
+
+        if final_prompt:
+            os.environ["FAL_KEY"] = fal_key
+            with st.spinner("✨ Creating your image..."):
+                try:
                     result = fal_client.subscribe(
                         "fal-ai/flux/schnell",
-                        arguments={"prompt": new_prompt}
+                        arguments={"prompt": final_prompt}
                     )
                     image_url = result["images"][0]["url"]
                     st.session_state.last_image_url = image_url
-                    st.session_state.last_prompt = new_prompt
+                    st.session_state.last_prompt = final_prompt
                     st.rerun()
+                except Exception as e:
+                    st.error("Image generation failed. Please try again.")
