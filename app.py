@@ -31,7 +31,7 @@ if not st.session_state.splash_done:
 groq_key = st.secrets["GROQ_API_KEY"]
 fal_key = st.secrets["FAL_API_KEY"]
 
-# Load chat history from file
+# Chat history functions
 CHAT_FILE = "chat_history.json"
 
 def load_chat():
@@ -75,17 +75,44 @@ with tab1:
 
 with tab2:
     st.subheader("Generate with Flux")
-    prompt = st.text_input("Describe your image...")
-    if st.button("Generate"):
+    if "last_prompt" not in st.session_state:
+        st.session_state.last_prompt = ""
+    if "last_image_url" not in st.session_state:
+        st.session_state.last_image_url = ""
+
+    prompt = st.text_input("Describe your image...", key="main_prompt")
+
+    if st.button("✨ Generate"):
         os.environ["FAL_KEY"] = fal_key
-        with st.spinner("Creating..."):
+        with st.spinner("Creating your image..."):
             result = fal_client.subscribe(
                 "fal-ai/flux/schnell",
                 arguments={"prompt": prompt}
             )
             image_url = result["images"][0]["url"]
-            st.image(image_url)
-            image_data = requests.get(image_url).content
-            b64 = base64.b64encode(image_data).decode()
-            href = f'<a href="data:image/png;base64,{b64}" download="qwill_image.png">📥 Download Image</a>'
-            st.markdown(href, unsafe_allow_html=True)
+            st.session_state.last_prompt = prompt
+            st.session_state.last_image_url = image_url
+
+    if st.session_state.last_image_url:
+        st.image(st.session_state.last_image_url)
+        image_data = requests.get(st.session_state.last_image_url).content
+        b64 = base64.b64encode(image_data).decode()
+        href = f'<a href="data:image/png;base64,{b64}" download="qwill_image.png">📥 Download Image</a>'
+        st.markdown(href, unsafe_allow_html=True)
+
+        st.markdown("---")
+        st.markdown("**Not satisfied? Refine it:**")
+        refinement = st.text_input("What would you like to change?", key="refine_prompt")
+        if st.button("🔄 Regenerate"):
+            if refinement:
+                new_prompt = st.session_state.last_prompt + ", " + refinement
+                os.environ["FAL_KEY"] = fal_key
+                with st.spinner("Refining your image..."):
+                    result = fal_client.subscribe(
+                        "fal-ai/flux/schnell",
+                        arguments={"prompt": new_prompt}
+                    )
+                    image_url = result["images"][0]["url"]
+                    st.session_state.last_image_url = image_url
+                    st.session_state.last_prompt = new_prompt
+                    st.rerun()
