@@ -1,6 +1,5 @@
 import streamlit as st
 import groq
-import fal_client
 import time
 import os
 import json
@@ -13,6 +12,21 @@ st.set_page_config(
     page_icon="✨",
     layout="centered"
 )
+
+# Mobile CSS fix
+st.markdown("""
+<style>
+    .stChatFloatingInputContainer {
+        position: fixed;
+        bottom: 0;
+        width: 100%;
+    }
+    .stChatMessageContainer {
+        padding-bottom: 80px;
+    }
+    section[data-testid="stSidebar"] {display: none;}
+</style>
+""", unsafe_allow_html=True)
 
 # Splash Screen
 if "splash_done" not in st.session_state:
@@ -31,9 +45,8 @@ if not st.session_state.splash_done:
 
 # API Keys
 groq_key = st.secrets["GROQ_API_KEY"]
-fal_key = st.secrets["FAL_API_KEY"]
 
-# System prompt
+# System prompts
 SYSTEM_PROMPT = {
     "role": "system",
     "content": "You are Qwill, a helpful and friendly AI assistant created by Quaarrd. Never say you are Qwen or any other AI. You are Qwill. Be warm, helpful and concise."
@@ -64,6 +77,14 @@ def extract_prompt(text):
     match = re.search(r'\[PROMPT\](.*?)\[/PROMPT\]', text, re.DOTALL)
     if match:
         return match.group(1).strip()
+    return None
+
+def generate_image(prompt):
+    encoded = requests.utils.quote(prompt)
+    url = f"https://image.pollinations.ai/prompt/{encoded}?model=flux&width=1024&height=1024&nologo=true"
+    response = requests.get(url, timeout=60)
+    if response.status_code == 200:
+        return response.content
     return None
 
 # Main App
@@ -102,25 +123,21 @@ with tab2:
 
     if "image_messages" not in st.session_state:
         st.session_state.image_messages = []
-    if "last_image_url" not in st.session_state:
-        st.session_state.last_image_url = ""
-    if "last_prompt" not in st.session_state:
-        st.session_state.last_prompt = ""
+    if "last_image_bytes" not in st.session_state:
+        st.session_state.last_image_bytes = None
 
     if st.button("🗑️ Clear Image Chat"):
         st.session_state.image_messages = []
-        st.session_state.last_image_url = ""
-        st.session_state.last_prompt = ""
+        st.session_state.last_image_bytes = None
         st.rerun()
 
     for msg in st.session_state.image_messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    if st.session_state.last_image_url:
-        st.image(st.session_state.last_image_url)
-        image_data = requests.get(st.session_state.last_image_url).content
-        b64 = base64.b64encode(image_data).decode()
+    if st.session_state.last_image_bytes:
+        st.image(st.session_state.last_image_bytes)
+        b64 = base64.b64encode(st.session_state.last_image_bytes).decode()
         href = f'<a href="data:image/png;base64,{b64}" download="qwill_image.png">📥 Download Image</a>'
         st.markdown(href, unsafe_allow_html=True)
 
@@ -145,16 +162,10 @@ with tab2:
             st.markdown(clean_reply)
 
         if final_prompt:
-            os.environ["FAL_KEY"] = fal_key
             with st.spinner("✨ Creating your image..."):
-                try:
-                    result = fal_client.subscribe(
-                        "fal-ai/flux/schnell",
-                        arguments={"prompt": final_prompt}
-                    )
-                    image_url = result["images"][0]["url"]
-                    st.session_state.last_image_url = image_url
-                    st.session_state.last_prompt = final_prompt
+                image_bytes = generate_image(final_prompt)
+                if image_bytes:
+                    st.session_state.last_image_bytes = image_bytes
                     st.rerun()
-                except Exception as e:
+                else:
                     st.error("Image generation failed. Please try again.")
