@@ -81,54 +81,56 @@ def extract_prompt(text):
     return None
 
 def generate_image(prompt):
-    # Step 1: Submit the generation request
-    submit_url = "https://gateway.pixazo.ai/flux-schnell/v1/flux-schnell-request"
     headers = {
         "Content-Type": "application/json",
         "Cache-Control": "no-cache",
         "Ocp-Apim-Subscription-Key": pixazo_key
     }
-    payload = {"prompt": prompt}
 
+    # Step 1: Submit request
     try:
-        response = requests.post(submit_url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
-        data = response.json()
+        submit_response = requests.post(
+            "https://gateway.pixazo.ai/flux-1-schnell/v1/getData",
+            headers=headers,
+            json={"prompt": prompt},
+            timeout=30
+        )
+        submit_response.raise_for_status()
+        submit_data = submit_response.json()
+        request_id = submit_data.get("requestId")
 
-        # Step 2: Get the polling URL or request_id
-        polling_url = data.get("polling_url")
-        request_id = data.get("request_id")
-
-        if not polling_url and request_id:
-            polling_url = f"https://gateway.pixazo.ai/v2/requests/status/{request_id}"
-
-        if not polling_url:
-            # Some free endpoints return the image directly
-            image_url = data.get("output")
-            if image_url:
-                img_response = requests.get(image_url, timeout=30)
-                if img_response.status_code == 200:
-                    return img_response.content
+        if not request_id:
+            st.error(f"No requestId returned: {submit_data}")
             return None
 
-        # Step 3: Poll for result (max 2 minutes)
-        poll_headers = {"Ocp-Apim-Subscription-Key": pixazo_key}
-        for _ in range(24):  # 24 x 5s = 120s max
+        # Step 2: Poll for result (max 2 minutes)
+        for _ in range(24):  # 24 x 5s = 120s
             time.sleep(5)
-            poll_response = requests.get(polling_url, headers=poll_headers, timeout=15)
+            poll_response = requests.post(
+                "https://gateway.pixazo.ai/flux-1-schnell/v1/checkStatus",
+                headers=headers,
+                json={"requestId": request_id},
+                timeout=15
+            )
             poll_data = poll_response.json()
-            status = poll_data.get("status", "")
+            status = poll_data.get("status", "").lower()
 
-            if status == "COMPLETED":
-                output = poll_data.get("output", {})
-                media_urls = output.get("media_url", [])
-                if media_urls:
-                    img_response = requests.get(media_urls[0], timeout=30)
+            if status == "completed":
+                # Try different output field names
+                image_url = (
+                    poll_data.get("output") or
+                    poll_data.get("imageUrl") or
+                    poll_data.get("image_url") or
+                    (poll_data.get("output", {}) or {}).get("media_url", [None])[0]
+                )
+                if image_url and isinstance(image_url, str):
+                    img_response = requests.get(image_url, timeout=30)
                     if img_response.status_code == 200:
                         return img_response.content
+                st.error(f"Completed but no image URL found: {poll_data}")
                 return None
 
-            elif status in ("FAILED", "ERROR"):
+            elif status in ("failed", "error"):
                 st.error(f"Generation failed: {poll_data.get('error', 'Unknown error')}")
                 return None
 
@@ -221,4 +223,3 @@ with tab2:
                     st.rerun()
                 else:
                     st.error("Image generation failed. Please try again.")
-    
