@@ -1,9 +1,6 @@
-    
 import streamlit as st
 import groq
 import time
-import os
-import json
 import base64
 import requests
 import re
@@ -86,65 +83,22 @@ def generate_image(prompt):
         "Cache-Control": "no-cache",
         "Ocp-Apim-Subscription-Key": pixazo_key
     }
-
     try:
-        # Step 1: Submit to Flux Dev
         response = requests.post(
-            "https://gateway.pixazo.ai/flux-dev/v1/dev/textToImage",
+            "https://gateway.pixazo.ai/flux-1-schnell/v1/getData",
             headers=headers,
-            json={"prompt": prompt, "image_size": "square_hd"},
+            json={"prompt": prompt},
             timeout=60
         )
         response.raise_for_status()
         data = response.json()
-
-        # Case 1: Direct output URL returned
         image_url = data.get("output")
         if image_url and isinstance(image_url, str):
             img_response = requests.get(image_url, timeout=30)
             if img_response.status_code == 200:
                 return img_response.content
-
-        # Case 2: Polling required
-        request_id = data.get("request_id")
-        if request_id:
-            for _ in range(24):  # Poll up to 2 minutes
-                time.sleep(5)
-                poll = requests.post(
-                    "https://gateway.pixazo.ai/flux-dev-polling/dev/getFluxDevStatus",
-                    headers=headers,
-                    json={"request_id": request_id},
-                    timeout=15
-                )
-                poll_data = poll.json()
-                status = poll_data.get("status", "").upper()
-
-                if status == "COMPLETED":
-                    output = poll_data.get("output", {})
-                    media_urls = output.get("media_url", []) if isinstance(output, dict) else []
-                    if media_urls:
-                        img_response = requests.get(media_urls[0], timeout=30)
-                        if img_response.status_code == 200:
-                            return img_response.content
-                    # Try direct output field
-                    direct_url = poll_data.get("output") if isinstance(poll_data.get("output"), str) else None
-                    if direct_url:
-                        img_response = requests.get(direct_url, timeout=30)
-                        if img_response.status_code == 200:
-                            return img_response.content
-                    st.error(f"Completed but no image found: {poll_data}")
-                    return None
-
-                elif status in ("FAILED", "ERROR"):
-                    st.error(f"Generation failed: {poll_data.get('error', 'Unknown error')}")
-                    return None
-
-            st.error("Timed out. Please try again.")
-            return None
-
         st.error(f"Unexpected response: {data}")
         return None
-
     except Exception as e:
         st.error(f"Image error: {e}")
         return None
@@ -219,10 +173,11 @@ with tab2:
             st.markdown(clean_reply)
 
         if final_prompt:
-            with st.spinner("✨ Creating your image... (may take up to 60 seconds)"):
+            with st.spinner("✨ Creating your image..."):
                 image_bytes = generate_image(final_prompt)
                 if image_bytes:
                     st.session_state.last_image_bytes = image_bytes
                     st.rerun()
                 else:
                     st.error("Image generation failed. Please try again.")
+    
