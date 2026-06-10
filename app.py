@@ -87,54 +87,24 @@ def generate_image(prompt):
         "Ocp-Apim-Subscription-Key": pixazo_key
     }
 
-    # Step 1: Submit request
     try:
-        submit_response = requests.post(
+        response = requests.post(
             "https://gateway.pixazo.ai/flux-1-schnell/v1/getData",
             headers=headers,
             json={"prompt": prompt},
-            timeout=30
+            timeout=60
         )
-        submit_response.raise_for_status()
-        submit_data = submit_response.json()
-        request_id = submit_data.get("requestId")
+        response.raise_for_status()
+        data = response.json()
 
-        if not request_id:
-            st.error(f"No requestId returned: {submit_data}")
-            return None
+        # API returns image URL directly in "output" field
+        image_url = data.get("output")
+        if image_url and isinstance(image_url, str):
+            img_response = requests.get(image_url, timeout=30)
+            if img_response.status_code == 200:
+                return img_response.content
 
-        # Step 2: Poll for result (max 2 minutes)
-        for _ in range(24):  # 24 x 5s = 120s
-            time.sleep(5)
-            poll_response = requests.post(
-                "https://gateway.pixazo.ai/flux-1-schnell/v1/checkStatus",
-                headers=headers,
-                json={"requestId": request_id},
-                timeout=15
-            )
-            poll_data = poll_response.json()
-            status = poll_data.get("status", "").lower()
-
-            if status == "completed":
-                # Try different output field names
-                image_url = (
-                    poll_data.get("output") or
-                    poll_data.get("imageUrl") or
-                    poll_data.get("image_url") or
-                    (poll_data.get("output", {}) or {}).get("media_url", [None])[0]
-                )
-                if image_url and isinstance(image_url, str):
-                    img_response = requests.get(image_url, timeout=30)
-                    if img_response.status_code == 200:
-                        return img_response.content
-                st.error(f"Completed but no image URL found: {poll_data}")
-                return None
-
-            elif status in ("failed", "error"):
-                st.error(f"Generation failed: {poll_data.get('error', 'Unknown error')}")
-                return None
-
-        st.error("Image generation timed out. Please try again.")
+        st.error(f"Unexpected response: {data}")
         return None
 
     except Exception as e:
@@ -216,7 +186,7 @@ with tab2:
             st.markdown(clean_reply)
 
         if final_prompt:
-            with st.spinner("✨ Creating your image... (may take up to 60 seconds)"):
+            with st.spinner("✨ Creating your image..."):
                 image_bytes = generate_image(final_prompt)
                 if image_bytes:
                     st.session_state.last_image_bytes = image_bytes
