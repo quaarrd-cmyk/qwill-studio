@@ -45,6 +45,7 @@ if not st.session_state.splash_done:
 
 # API Keys
 groq_key = st.secrets["GROQ_API_KEY"]
+pixazo_key = st.secrets["PIXAZO_API_KEY"]
 
 # System prompts
 SYSTEM_PROMPT = {
@@ -80,25 +81,63 @@ def extract_prompt(text):
     return None
 
 def generate_image(prompt):
-    url = "https://gateway.pixazo.ai/flux-1-schnell/v1/generateT2I"
+    # Step 1: Submit the generation request
+    submit_url = "https://gateway.pixazo.ai/flux-schnell/v1/flux-schnell-request"
     headers = {
         "Content-Type": "application/json",
         "Cache-Control": "no-cache",
-        "Ocp-Apim-Subscription-Key": st.secrets["PIXAZO_API_KEY"]
+        "Ocp-Apim-Subscription-Key": pixazo_key
     }
     payload = {"prompt": prompt}
+
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=120)
+        response = requests.post(submit_url, headers=headers, json=payload, timeout=30)
         response.raise_for_status()
         data = response.json()
-        image_url = data.get("output")
-        if image_url:
-            img_response = requests.get(image_url, timeout=30)
-            if img_response.status_code == 200:
-                return img_response.content
+
+        # Step 2: Get the polling URL or request_id
+        polling_url = data.get("polling_url")
+        request_id = data.get("request_id")
+
+        if not polling_url and request_id:
+            polling_url = f"https://gateway.pixazo.ai/v2/requests/status/{request_id}"
+
+        if not polling_url:
+            # Some free endpoints return the image directly
+            image_url = data.get("output")
+            if image_url:
+                img_response = requests.get(image_url, timeout=30)
+                if img_response.status_code == 200:
+                    return img_response.content
+            return None
+
+        # Step 3: Poll for result (max 2 minutes)
+        poll_headers = {"Ocp-Apim-Subscription-Key": pixazo_key}
+        for _ in range(24):  # 24 x 5s = 120s max
+            time.sleep(5)
+            poll_response = requests.get(polling_url, headers=poll_headers, timeout=15)
+            poll_data = poll_response.json()
+            status = poll_data.get("status", "")
+
+            if status == "COMPLETED":
+                output = poll_data.get("output", {})
+                media_urls = output.get("media_url", [])
+                if media_urls:
+                    img_response = requests.get(media_urls[0], timeout=30)
+                    if img_response.status_code == 200:
+                        return img_response.content
+                return None
+
+            elif status in ("FAILED", "ERROR"):
+                st.error(f"Generation failed: {poll_data.get('error', 'Unknown error')}")
+                return None
+
+        st.error("Image generation timed out. Please try again.")
+        return None
+
     except Exception as e:
         st.error(f"Image error: {e}")
-    return None
+        return None
 
 # Main App
 tab1, tab2 = st.tabs(["💬 Chat", "🎨 Image"])
@@ -175,10 +214,11 @@ with tab2:
             st.markdown(clean_reply)
 
         if final_prompt:
-            with st.spinner("✨ Creating your image..."):
+            with st.spinner("✨ Creating your image... (may take up to 60 seconds)"):
                 image_bytes = generate_image(final_prompt)
                 if image_bytes:
                     st.session_state.last_image_bytes = image_bytes
                     st.rerun()
                 else:
                     st.error("Image generation failed. Please try again.")
+    
