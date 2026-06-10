@@ -223,3 +223,4 @@ with tab2:
                     st.rerun()
                 else:
                     st.error("Image generation failed. Please try again.")
+    
