@@ -13,16 +13,20 @@ st.set_page_config(
     layout="centered"
 )
 
-# Mobile CSS fix
+# Mobile CSS fix — input bar at bottom
 st.markdown("""
 <style>
-    .stChatFloatingInputContainer {
+    .stChatInput {
         position: fixed;
         bottom: 0;
-        width: 100%;
+        left: 0;
+        right: 0;
+        padding: 10px;
+        background-color: #0e1117;
+        z-index: 999;
     }
-    .stChatMessageContainer {
-        padding-bottom: 80px;
+    .main .block-container {
+        padding-bottom: 100px;
     }
     section[data-testid="stSidebar"] {display: none;}
 </style>
@@ -45,7 +49,7 @@ if not st.session_state.splash_done:
 
 # API Keys
 groq_key = st.secrets["GROQ_API_KEY"]
-pixazo_key = st.secrets["PIXAZO_API_KEY"]
+modelslab_key = st.secrets["MODELSLAB_API_KEY"]
 
 # System prompts
 SYSTEM_PROMPT = {
@@ -58,18 +62,15 @@ IMAGE_SYSTEM_PROMPT = {
     "content": "You are Qwill, an AI image assistant by Quaarrd. Help the user develop their image idea through friendly conversation. Ask questions to understand exactly what they want — style, colors, mood, details. When the user seems ready, say 'Great! I will generate that now.' and then output their final image prompt inside these tags: [PROMPT]detailed image description here[/PROMPT]. Only output the PROMPT tags when the user is ready to generate."
 }
 
-# Chat history functions
-CHAT_FILE = "chat_history.json"
+# Chat history — use session state only (Streamlit Cloud doesn't persist files)
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-def load_chat():
-    if os.path.exists(CHAT_FILE):
-        with open(CHAT_FILE, "r") as f:
-            return json.load(f)
-    return []
+if "image_messages" not in st.session_state:
+    st.session_state.image_messages = []
 
-def save_chat(messages):
-    with open(CHAT_FILE, "w") as f:
-        json.dump(messages, f)
+if "last_image_bytes" not in st.session_state:
+    st.session_state.last_image_bytes = None
 
 def remove_think_tags(text):
     return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
@@ -81,28 +82,61 @@ def extract_prompt(text):
     return None
 
 def generate_image(prompt):
-    headers = {
-        "Content-Type": "application/json",
-        "Cache-Control": "no-cache",
-        "Ocp-Apim-Subscription-Key": pixazo_key
-    }
-
     try:
         response = requests.post(
-            "https://gateway.pixazo.ai/flux-1-schnell/v1/getData",
-            headers=headers,
-            json={"prompt": prompt},
+            "https://modelslab.com/api/v6/images/text2img",
+            headers={"Content-Type": "application/json"},
+            json={
+                "key": modelslab_key,
+                "model_id": "flux",
+                "prompt": prompt,
+                "negative_prompt": "blurry, low quality, distorted, ugly",
+                "width": "1024",
+                "height": "1024",
+                "samples": "1",
+                "num_inference_steps": "30",
+                "enhance_prompt": "yes",
+                "safety_checker": "no",
+                "guidance_scale": 7.5,
+                "seed": None,
+                "webhook": None,
+                "track_id": None
+            },
             timeout=60
         )
         response.raise_for_status()
         data = response.json()
 
-        # API returns image URL directly in "output" field
-        image_url = data.get("output")
-        if image_url and isinstance(image_url, str):
-            img_response = requests.get(image_url, timeout=30)
-            if img_response.status_code == 200:
-                return img_response.content
+        # Handle direct output
+        if data.get("status") == "success":
+            image_url = data.get("output", [None])[0]
+            if image_url:
+                img_response = requests.get(image_url, timeout=30)
+                if img_response.status_code == 200:
+                    return img_response.content
+
+        # Handle queued/processing response
+        elif data.get("status") in ("processing", "queued"):
+            fetch_url = data.get("fetch_result")
+            if fetch_url:
+                for _ in range(24):  # Poll up to 2 minutes
+                    time.sleep(5)
+                    poll = requests.post(
+                        fetch_url,
+                        headers={"Content-Type": "application/json"},
+                        json={"key": modelslab_key},
+                        timeout=15
+                    )
+                    poll_data = poll.json()
+                    if poll_data.get("status") == "success":
+                        image_url = poll_data.get("output", [None])[0]
+                        if image_url:
+                            img_response = requests.get(image_url, timeout=30)
+                            if img_response.status_code == 200:
+                                return img_response.content
+                        return None
+                st.error("Image generation timed out. Please try again.")
+                return None
 
         st.error(f"Unexpected response: {data}")
         return None
@@ -116,19 +150,20 @@ tab1, tab2 = st.tabs(["💬 Chat", "🎨 Image"])
 
 with tab1:
     st.subheader("Chat with Qwill")
-    if "messages" not in st.session_state:
-        st.session_state.messages = load_chat()
+
     if st.button("🗑️ Clear Chat"):
         st.session_state.messages = []
-        save_chat([])
         st.rerun()
+
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-    if prompt := st.chat_input("Say something..."):
-        st.session_state.messages.append({"role":"user","content":prompt})
+
+    if prompt := st.chat_input("Say something...", key="chat_input"):
+        st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
+
         client = groq.Groq(api_key=groq_key)
         response = client.chat.completions.create(
             model="qwen/qwen3-32b",
@@ -136,19 +171,13 @@ with tab1:
         )
         raw_reply = response.choices[0].message.content
         reply = remove_think_tags(raw_reply)
-        st.session_state.messages.append({"role":"assistant","content":reply})
-        save_chat(st.session_state.messages)
+        st.session_state.messages.append({"role": "assistant", "content": reply})
         with st.chat_message("assistant"):
             st.markdown(reply)
 
 with tab2:
     st.subheader("🎨 Image Studio")
     st.caption("Tell Qwill what you want to create and we'll build it together!")
-
-    if "image_messages" not in st.session_state:
-        st.session_state.image_messages = []
-    if "last_image_bytes" not in st.session_state:
-        st.session_state.last_image_bytes = None
 
     if st.button("🗑️ Clear Image Chat"):
         st.session_state.image_messages = []
@@ -166,7 +195,7 @@ with tab2:
         st.markdown(href, unsafe_allow_html=True)
 
     if image_prompt := st.chat_input("Describe what you want to create...", key="image_input"):
-        st.session_state.image_messages.append({"role":"user","content":image_prompt})
+        st.session_state.image_messages.append({"role": "user", "content": image_prompt})
         with st.chat_message("user"):
             st.markdown(image_prompt)
 
@@ -181,12 +210,12 @@ with tab2:
         final_prompt = extract_prompt(reply)
         clean_reply = re.sub(r'\[PROMPT\].*?\[/PROMPT\]', '', reply, flags=re.DOTALL).strip()
 
-        st.session_state.image_messages.append({"role":"assistant","content":clean_reply})
+        st.session_state.image_messages.append({"role": "assistant", "content": clean_reply})
         with st.chat_message("assistant"):
             st.markdown(clean_reply)
 
         if final_prompt:
-            with st.spinner("✨ Creating your image..."):
+            with st.spinner("✨ Creating your image... (may take up to 60 seconds)"):
                 image_bytes = generate_image(final_prompt)
                 if image_bytes:
                     st.session_state.last_image_bytes = image_bytes
