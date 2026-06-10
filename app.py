@@ -80,11 +80,24 @@ def extract_prompt(text):
     return None
 
 def generate_image(prompt):
-    encoded = requests.utils.quote(prompt)
-    url = f"https://image.pollinations.ai/prompt/{encoded}?model=flux&width=1024&height=1024&nologo=true"
-    response = requests.get(url, timeout=60)
-    if response.status_code == 200:
-        return response.content
+    url = "https://gateway.pixazo.ai/flux-1-schnell/v1/generateT2I"
+    headers = {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-cache",
+        "Ocp-Apim-Subscription-Key": st.secrets["PIXAZO_API_KEY"]
+    }
+    payload = {"prompt": prompt}
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=120)
+        response.raise_for_status()
+        data = response.json()
+        image_url = data.get("output")
+        if image_url:
+            img_response = requests.get(image_url, timeout=30)
+            if img_response.status_code == 200:
+                return img_response.content
+    except Exception as e:
+        st.error(f"Image error: {e}")
     return None
 
 # Main App
