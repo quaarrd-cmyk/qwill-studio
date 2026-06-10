@@ -57,7 +57,14 @@ SYSTEM_PROMPT = {
 
 IMAGE_SYSTEM_PROMPT = {
     "role": "system",
-    "content": "You are Qwill, an AI image assistant by Quaarrd. Help the user develop their image idea through friendly conversation. Ask questions to understand exactly what they want — style, colors, mood, details. When the user seems ready, say 'Great! I will generate that now.' and then output their final image prompt inside these tags: [PROMPT]detailed image description here[/PROMPT]. Only output the PROMPT tags when the user is ready to generate."
+    "content": """You are Qwill, an AI image assistant by Quaarrd. Your job is to help users create images through friendly conversation.
+
+RULES:
+1. When a user first describes an image, ask a MAXIMUM of 2 short questions to clarify their vision. No long lists of questions.
+2. After ONE round of clarification (or if the user says anything like "go ahead", "generate", "just do it", "okay", "yes", "whatever you choose"), IMMEDIATELY generate the image. Do NOT ask more questions.
+3. When generating, say ONLY: "Great! I'll create that now ✨" and then output the prompt in tags like this: [PROMPT]detailed image description here[/PROMPT]
+4. NEVER show the prompt text to the user. The [PROMPT] tags are hidden — just say you're generating.
+5. If the user asks for the same image again or with small changes, generate immediately without asking questions."""
 }
 
 # Session state init
@@ -71,11 +78,15 @@ if "last_image_bytes" not in st.session_state:
 def remove_think_tags(text):
     return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
-def extract_prompt(text):
+def extract_and_clean(text):
+    """Extract image prompt and remove ALL traces of it from display text."""
     match = re.search(r'\[PROMPT\](.*?)\[/PROMPT\]', text, re.DOTALL)
     if match:
-        return match.group(1).strip()
-    return None
+        image_prompt = match.group(1).strip()
+        # Remove the prompt tags and everything inside
+        clean = re.sub(r'\[PROMPT\].*?\[/PROMPT\]', '', text, flags=re.DOTALL).strip()
+        return clean, image_prompt
+    return text, None
 
 def generate_image(prompt):
     headers = {
@@ -145,12 +156,8 @@ with tab2:
     for msg in st.session_state.image_messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-
-    if st.session_state.last_image_bytes:
-        st.image(st.session_state.last_image_bytes)
-        b64 = base64.b64encode(st.session_state.last_image_bytes).decode()
-        href = f'<a href="data:image/png;base64,{b64}" download="qwill_image.png">📥 Download Image</a>'
-        st.markdown(href, unsafe_allow_html=True)
+            if "image_bytes" in msg and msg["image_bytes"]:
+                st.image(msg["image_bytes"])
 
     if image_prompt := st.chat_input("Describe what you want to create...", key="image_input"):
         st.session_state.image_messages.append({"role": "user", "content": image_prompt})
@@ -160,24 +167,34 @@ with tab2:
         client = groq.Groq(api_key=groq_key)
         response = client.chat.completions.create(
             model="qwen/qwen3-32b",
-            messages=[IMAGE_SYSTEM_PROMPT] + st.session_state.image_messages
+            messages=[IMAGE_SYSTEM_PROMPT] + [
+                {"role": m["role"], "content": m["content"]}
+                for m in st.session_state.image_messages
+            ]
         )
         raw_reply = response.choices[0].message.content
         reply = remove_think_tags(raw_reply)
+        clean_reply, final_prompt = extract_and_clean(reply)
 
-        final_prompt = extract_prompt(reply)
-        clean_reply = re.sub(r'\[PROMPT\].*?\[/PROMPT\]', '', reply, flags=re.DOTALL).strip()
-
-        st.session_state.image_messages.append({"role": "assistant", "content": clean_reply})
-        with st.chat_message("assistant"):
-            st.markdown(clean_reply)
-
+        image_bytes = None
         if final_prompt:
             with st.spinner("✨ Creating your image..."):
                 image_bytes = generate_image(final_prompt)
-                if image_bytes:
-                    st.session_state.last_image_bytes = image_bytes
-                    st.rerun()
-                else:
-                    st.error("Image generation failed. Please try again.")
+
+        # Store message with image bytes
+        st.session_state.image_messages.append({
+            "role": "assistant",
+            "content": clean_reply,
+            "image_bytes": image_bytes
+        })
+
+        with st.chat_message("assistant"):
+            st.markdown(clean_reply)
+            if image_bytes:
+                st.image(image_bytes)
+                b64 = base64.b64encode(image_bytes).decode()
+                href = f'<a href="data:image/png;base64,{b64}" download="qwill_image.png">📥 Download Image</a>'
+                st.markdown(href, unsafe_allow_html=True)
+            elif final_prompt:
+                st.error("Image generation failed. Please try again.")
     
