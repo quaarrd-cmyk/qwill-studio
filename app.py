@@ -1,3 +1,4 @@
+    
 import streamlit as st
 import groq
 import time
@@ -49,7 +50,7 @@ if not st.session_state.splash_done:
 
 # API Keys
 groq_key = st.secrets["GROQ_API_KEY"]
-modelslab_key = st.secrets["MODELSLAB_API_KEY"]
+pixazo_key = st.secrets["PIXAZO_API_KEY"]
 
 # System prompts
 SYSTEM_PROMPT = {
@@ -62,13 +63,11 @@ IMAGE_SYSTEM_PROMPT = {
     "content": "You are Qwill, an AI image assistant by Quaarrd. Help the user develop their image idea through friendly conversation. Ask questions to understand exactly what they want — style, colors, mood, details. When the user seems ready, say 'Great! I will generate that now.' and then output their final image prompt inside these tags: [PROMPT]detailed image description here[/PROMPT]. Only output the PROMPT tags when the user is ready to generate."
 }
 
-# Chat history — use session state only (Streamlit Cloud doesn't persist files)
+# Session state init
 if "messages" not in st.session_state:
     st.session_state.messages = []
-
 if "image_messages" not in st.session_state:
     st.session_state.image_messages = []
-
 if "last_image_bytes" not in st.session_state:
     st.session_state.last_image_bytes = None
 
@@ -82,61 +81,66 @@ def extract_prompt(text):
     return None
 
 def generate_image(prompt):
+    headers = {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-cache",
+        "Ocp-Apim-Subscription-Key": pixazo_key
+    }
+
     try:
+        # Step 1: Submit to Flux Dev
         response = requests.post(
-            "https://modelslab.com/api/v6/images/text2img",
-            headers={"Content-Type": "application/json"},
-            json={
-                "key": modelslab_key,
-                "model_id": "flux",
-                "prompt": prompt,
-                "negative_prompt": "blurry, low quality, distorted, ugly",
-                "width": "1024",
-                "height": "1024",
-                "samples": "1",
-                "num_inference_steps": "30",
-                "enhance_prompt": "yes",
-                "safety_checker": "no",
-                "guidance_scale": 7.5,
-                "seed": None,
-                "webhook": None,
-                "track_id": None
-            },
+            "https://gateway.pixazo.ai/flux-dev/v1/dev/textToImage",
+            headers=headers,
+            json={"prompt": prompt, "image_size": "square_hd"},
             timeout=60
         )
         response.raise_for_status()
         data = response.json()
 
-        # Handle direct output
-        if data.get("status") == "success":
-            image_url = data.get("output", [None])[0]
-            if image_url:
-                img_response = requests.get(image_url, timeout=30)
-                if img_response.status_code == 200:
-                    return img_response.content
+        # Case 1: Direct output URL returned
+        image_url = data.get("output")
+        if image_url and isinstance(image_url, str):
+            img_response = requests.get(image_url, timeout=30)
+            if img_response.status_code == 200:
+                return img_response.content
 
-        # Handle queued/processing response
-        elif data.get("status") in ("processing", "queued"):
-            fetch_url = data.get("fetch_result")
-            if fetch_url:
-                for _ in range(24):  # Poll up to 2 minutes
-                    time.sleep(5)
-                    poll = requests.post(
-                        fetch_url,
-                        headers={"Content-Type": "application/json"},
-                        json={"key": modelslab_key},
-                        timeout=15
-                    )
-                    poll_data = poll.json()
-                    if poll_data.get("status") == "success":
-                        image_url = poll_data.get("output", [None])[0]
-                        if image_url:
-                            img_response = requests.get(image_url, timeout=30)
-                            if img_response.status_code == 200:
-                                return img_response.content
-                        return None
-                st.error("Image generation timed out. Please try again.")
-                return None
+        # Case 2: Polling required
+        request_id = data.get("request_id")
+        if request_id:
+            for _ in range(24):  # Poll up to 2 minutes
+                time.sleep(5)
+                poll = requests.post(
+                    "https://gateway.pixazo.ai/flux-dev-polling/dev/getFluxDevStatus",
+                    headers=headers,
+                    json={"request_id": request_id},
+                    timeout=15
+                )
+                poll_data = poll.json()
+                status = poll_data.get("status", "").upper()
+
+                if status == "COMPLETED":
+                    output = poll_data.get("output", {})
+                    media_urls = output.get("media_url", []) if isinstance(output, dict) else []
+                    if media_urls:
+                        img_response = requests.get(media_urls[0], timeout=30)
+                        if img_response.status_code == 200:
+                            return img_response.content
+                    # Try direct output field
+                    direct_url = poll_data.get("output") if isinstance(poll_data.get("output"), str) else None
+                    if direct_url:
+                        img_response = requests.get(direct_url, timeout=30)
+                        if img_response.status_code == 200:
+                            return img_response.content
+                    st.error(f"Completed but no image found: {poll_data}")
+                    return None
+
+                elif status in ("FAILED", "ERROR"):
+                    st.error(f"Generation failed: {poll_data.get('error', 'Unknown error')}")
+                    return None
+
+            st.error("Timed out. Please try again.")
+            return None
 
         st.error(f"Unexpected response: {data}")
         return None
@@ -222,4 +226,3 @@ with tab2:
                     st.rerun()
                 else:
                     st.error("Image generation failed. Please try again.")
-    
