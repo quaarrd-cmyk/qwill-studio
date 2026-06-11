@@ -50,33 +50,30 @@ if not st.session_state.splash_done:
 groq_key = st.secrets["GROQ_API_KEY"]
 pixazo_key = st.secrets["PIXAZO_API_KEY"]
 
-# System prompts
+# System prompt — unified Qwill
 SYSTEM_PROMPT = {
     "role": "system",
-    "content": "You are Qwill, a helpful and friendly AI assistant created by Quaarrd. Never say you are Qwen or any other AI. You are Qwill. Be warm, helpful and concise."
+    "content": """You are Qwill, a friendly and intelligent AI assistant created by Quaarrd. You can chat, answer questions, AND create images — all in one conversation.
+
+HOW YOU WORK:
+- For normal questions or chat → just respond naturally and helpfully
+- For image requests → follow the image creation flow below
+- Never say you are Qwen or any other AI. You are Qwill.
+
+IMAGE CREATION RULES:
+1. When a user asks for an image, ask a MAXIMUM of 1-2 short questions to understand their vision. No long lists.
+2. After one round of clarification OR if user says "go ahead", "generate", "create it", "just do it", "yes", "okay", "whatever you choose" → IMMEDIATELY generate. No more questions.
+3. When ready to generate, say ONLY: "Great! I'll create that now ✨" then output: [PROMPT]detailed image description here[/PROMPT]
+4. NEVER show the prompt text to the user. It is hidden from them.
+5. For small changes or "same person" requests → generate immediately without asking anything.
+6. If the user wants the SAME person/character/style as a previous image → add [SAME_SEED] anywhere in your response.
+7. Remember style preferences the user mentions (dark, moody, realistic, etc.) and apply them automatically to future images.
+8. ONLY output [PROMPT] tags when the user is genuinely requesting image creation. Never output them for regular conversation, greetings, or non-image requests."""
 }
 
-IMAGE_SYSTEM_PROMPT = {
-    "role": "system",
-    "content": """You are Qwill, an AI image assistant by Quaarrd. Your job is to help users create images through friendly conversation.
-
-RULES:
-1. When a user first describes an image, ask a MAXIMUM of 2 short questions to clarify their vision. No long lists of questions.
-2. After ONE round of clarification (or if the user says anything like "go ahead", "generate", "just do it", "okay", "yes", "whatever you choose"), IMMEDIATELY generate the image. Do NOT ask more questions.
-3. When generating, say ONLY: "Great! I'll create that now ✨" and then output the prompt in tags like this: [PROMPT]detailed image description here[/PROMPT]
-4. NEVER show the prompt text to the user. The [PROMPT] tags are hidden — just say you're generating.
-5. If the user asks for the same image again or with small changes, generate immediately without asking questions.
-6. If the user wants the SAME person/character/style as before, add [SAME_SEED] at the end of your response so the system knows to reuse the same seed.
-7. Pay attention to the user's style preferences throughout the conversation. If they mention they like dark moody aesthetics, realistic styles, or any preference — remember it and apply it to all future images automatically."""
-}
-
-# Session state init
+# Session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "image_messages" not in st.session_state:
-    st.session_state.image_messages = []
-if "last_image_bytes" not in st.session_state:
-    st.session_state.last_image_bytes = None
 if "last_seed" not in st.session_state:
     st.session_state.last_seed = None
 
@@ -84,12 +81,8 @@ def remove_think_tags(text):
     return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
 def extract_and_clean(text):
-    """Extract image prompt, detect seed reuse flag, clean display text."""
-    # Check for same seed flag
     reuse_seed = "[SAME_SEED]" in text
     text = text.replace("[SAME_SEED]", "").strip()
-
-    # Extract image prompt
     match = re.search(r'\[PROMPT\](.*?)\[/PROMPT\]', text, re.DOTALL)
     if match:
         image_prompt = match.group(1).strip()
@@ -105,7 +98,6 @@ def generate_image(prompt, seed=None):
     }
     if seed is None:
         seed = random.randint(1, 2147483647)
-
     try:
         response = requests.post(
             "https://gateway.pixazo.ai/flux-1-schnell/v1/getData",
@@ -126,93 +118,65 @@ def generate_image(prompt, seed=None):
         st.error(f"Image error: {e}")
         return None, seed
 
-# Main App
-tab1, tab2 = st.tabs(["💬 Chat", "🎨 Image"])
+# ── Main App ──
+st.markdown("### 💬 Chat with Qwill")
+st.caption("Ask me anything, or tell me what image you'd like to create ✨")
 
-with tab1:
-    st.subheader("Chat with Qwill")
+if st.button("🗑️ Clear Chat"):
+    st.session_state.messages = []
+    st.session_state.last_seed = None
+    st.rerun()
 
-    if st.button("🗑️ Clear Chat"):
-        st.session_state.messages = []
-        st.rerun()
+# Display chat history
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        if "image_bytes" in msg and msg["image_bytes"]:
+            st.image(msg["image_bytes"])
+            b64 = base64.b64encode(msg["image_bytes"]).decode()
+            href = f'<a href="data:image/png;base64,{b64}" download="qwill_image.png">📥 Download Image</a>'
+            st.markdown(href, unsafe_allow_html=True)
 
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+# Chat input
+if user_input := st.chat_input("Chat with Qwill or describe an image...", key="main_input"):
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
 
-    if prompt := st.chat_input("Say something...", key="chat_input"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+    client = groq.Groq(api_key=groq_key)
+    response = client.chat.completions.create(
+        model="qwen/qwen3-32b",
+        messages=[SYSTEM_PROMPT] + [
+            {"role": m["role"], "content": m["content"]}
+            for m in st.session_state.messages
+        ],
+        temperature=0.7,
+        max_tokens=800
+    )
+    raw_reply = response.choices[0].message.content
+    reply = remove_think_tags(raw_reply)
+    clean_reply, final_prompt, reuse_seed = extract_and_clean(reply)
 
-        client = groq.Groq(api_key=groq_key)
-        response = client.chat.completions.create(
-            model="qwen/qwen3-32b",
-            messages=[SYSTEM_PROMPT] + st.session_state.messages
-        )
-        raw_reply = response.choices[0].message.content
-        reply = remove_think_tags(raw_reply)
-        st.session_state.messages.append({"role": "assistant", "content": reply})
-        with st.chat_message("assistant"):
-            st.markdown(reply)
+    image_bytes = None
+    if final_prompt:
+        seed_to_use = st.session_state.last_seed if reuse_seed and st.session_state.last_seed else None
+        with st.spinner("✨ Creating your image..."):
+            image_bytes, used_seed = generate_image(final_prompt, seed=seed_to_use)
+        if image_bytes:
+            st.session_state.last_seed = used_seed
 
-with tab2:
-    st.subheader("🎨 Image Studio")
-    st.caption("Tell Qwill what you want to create and we'll build it together!")
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": clean_reply,
+        "image_bytes": image_bytes
+    })
 
-    if st.button("🗑️ Clear Image Chat"):
-        st.session_state.image_messages = []
-        st.session_state.last_image_bytes = None
-        st.session_state.last_seed = None
-        st.rerun()
-
-    for msg in st.session_state.image_messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-            if "image_bytes" in msg and msg["image_bytes"]:
-                st.image(msg["image_bytes"])
-
-    if image_prompt := st.chat_input("Describe what you want to create...", key="image_input"):
-        st.session_state.image_messages.append({"role": "user", "content": image_prompt})
-        with st.chat_message("user"):
-            st.markdown(image_prompt)
-
-        client = groq.Groq(api_key=groq_key)
-        response = client.chat.completions.create(
-            model="qwen/qwen3-32b",
-            messages=[IMAGE_SYSTEM_PROMPT] + [
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.image_messages
-            ]
-        )
-        raw_reply = response.choices[0].message.content
-        reply = remove_think_tags(raw_reply)
-        clean_reply, final_prompt, reuse_seed = extract_and_clean(reply)
-
-        image_bytes = None
-        used_seed = None
-
-        if final_prompt:
-            # Use same seed if user wants same person/style
-            seed_to_use = st.session_state.last_seed if reuse_seed and st.session_state.last_seed else None
-            with st.spinner("✨ Creating your image..."):
-                image_bytes, used_seed = generate_image(final_prompt, seed=seed_to_use)
-            if image_bytes:
-                st.session_state.last_seed = used_seed
-
-        st.session_state.image_messages.append({
-            "role": "assistant",
-            "content": clean_reply,
-            "image_bytes": image_bytes
-        })
-
-        with st.chat_message("assistant"):
-            st.markdown(clean_reply)
-            if image_bytes:
-                st.image(image_bytes)
-                b64 = base64.b64encode(image_bytes).decode()
-                href = f'<a href="data:image/png;base64,{b64}" download="qwill_image.png">📥 Download Image</a>'
-                st.markdown(href, unsafe_allow_html=True)
-            elif final_prompt:
-                st.error("Image generation failed. Please try again.")
-    
+    with st.chat_message("assistant"):
+        st.markdown(clean_reply)
+        if image_bytes:
+            st.image(image_bytes)
+            b64 = base64.b64encode(image_bytes).decode()
+            href = f'<a href="data:image/png;base64,{b64}" download="qwill_image.png">📥 Download Image</a>'
+            st.markdown(href, unsafe_allow_html=True)
+        elif final_prompt:
+            st.error("Image generation failed. Please try again.")
