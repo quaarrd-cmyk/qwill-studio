@@ -4,6 +4,7 @@ import time
 import base64
 import requests
 import re
+import random
 
 st.set_page_config(
     page_title="Qwill AI",
@@ -64,7 +65,9 @@ RULES:
 2. After ONE round of clarification (or if the user says anything like "go ahead", "generate", "just do it", "okay", "yes", "whatever you choose"), IMMEDIATELY generate the image. Do NOT ask more questions.
 3. When generating, say ONLY: "Great! I'll create that now ✨" and then output the prompt in tags like this: [PROMPT]detailed image description here[/PROMPT]
 4. NEVER show the prompt text to the user. The [PROMPT] tags are hidden — just say you're generating.
-5. If the user asks for the same image again or with small changes, generate immediately without asking questions."""
+5. If the user asks for the same image again or with small changes, generate immediately without asking questions.
+6. If the user wants the SAME person/character/style as before, add [SAME_SEED] at the end of your response so the system knows to reuse the same seed.
+7. Pay attention to the user's style preferences throughout the conversation. If they mention they like dark moody aesthetics, realistic styles, or any preference — remember it and apply it to all future images automatically."""
 }
 
 # Session state init
@@ -74,31 +77,40 @@ if "image_messages" not in st.session_state:
     st.session_state.image_messages = []
 if "last_image_bytes" not in st.session_state:
     st.session_state.last_image_bytes = None
+if "last_seed" not in st.session_state:
+    st.session_state.last_seed = None
 
 def remove_think_tags(text):
     return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
 def extract_and_clean(text):
-    """Extract image prompt and remove ALL traces of it from display text."""
+    """Extract image prompt, detect seed reuse flag, clean display text."""
+    # Check for same seed flag
+    reuse_seed = "[SAME_SEED]" in text
+    text = text.replace("[SAME_SEED]", "").strip()
+
+    # Extract image prompt
     match = re.search(r'\[PROMPT\](.*?)\[/PROMPT\]', text, re.DOTALL)
     if match:
         image_prompt = match.group(1).strip()
-        # Remove the prompt tags and everything inside
         clean = re.sub(r'\[PROMPT\].*?\[/PROMPT\]', '', text, flags=re.DOTALL).strip()
-        return clean, image_prompt
-    return text, None
+        return clean, image_prompt, reuse_seed
+    return text, None, reuse_seed
 
-def generate_image(prompt):
+def generate_image(prompt, seed=None):
     headers = {
         "Content-Type": "application/json",
         "Cache-Control": "no-cache",
         "Ocp-Apim-Subscription-Key": pixazo_key
     }
+    if seed is None:
+        seed = random.randint(1, 2147483647)
+
     try:
         response = requests.post(
             "https://gateway.pixazo.ai/flux-1-schnell/v1/getData",
             headers=headers,
-            json={"prompt": prompt},
+            json={"prompt": prompt, "seed": seed},
             timeout=60
         )
         response.raise_for_status()
@@ -107,12 +119,12 @@ def generate_image(prompt):
         if image_url and isinstance(image_url, str):
             img_response = requests.get(image_url, timeout=30)
             if img_response.status_code == 200:
-                return img_response.content
+                return img_response.content, seed
         st.error(f"Unexpected response: {data}")
-        return None
+        return None, seed
     except Exception as e:
         st.error(f"Image error: {e}")
-        return None
+        return None, seed
 
 # Main App
 tab1, tab2 = st.tabs(["💬 Chat", "🎨 Image"])
@@ -151,6 +163,7 @@ with tab2:
     if st.button("🗑️ Clear Image Chat"):
         st.session_state.image_messages = []
         st.session_state.last_image_bytes = None
+        st.session_state.last_seed = None
         st.rerun()
 
     for msg in st.session_state.image_messages:
@@ -174,14 +187,19 @@ with tab2:
         )
         raw_reply = response.choices[0].message.content
         reply = remove_think_tags(raw_reply)
-        clean_reply, final_prompt = extract_and_clean(reply)
+        clean_reply, final_prompt, reuse_seed = extract_and_clean(reply)
 
         image_bytes = None
-        if final_prompt:
-            with st.spinner("✨ Creating your image..."):
-                image_bytes = generate_image(final_prompt)
+        used_seed = None
 
-        # Store message with image bytes
+        if final_prompt:
+            # Use same seed if user wants same person/style
+            seed_to_use = st.session_state.last_seed if reuse_seed and st.session_state.last_seed else None
+            with st.spinner("✨ Creating your image..."):
+                image_bytes, used_seed = generate_image(final_prompt, seed=seed_to_use)
+            if image_bytes:
+                st.session_state.last_seed = used_seed
+
         st.session_state.image_messages.append({
             "role": "assistant",
             "content": clean_reply,
