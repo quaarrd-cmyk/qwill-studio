@@ -30,7 +30,19 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Splash Screen
+# ── Login Gate ──
+if not st.user.is_logged_in:
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        st.image("qwill_logo.jpg", width=150)
+        st.markdown("<h2 style='text-align:center'>Qwill AI</h2>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align:center'>by</p>", unsafe_allow_html=True)
+        st.image("Quaarrd logo.jpg", width=120)
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.button("Sign in with Google", on_click=st.login, use_container_width=True)
+    st.stop()
+
+# ── Splash Screen (only after login) ──
 if "splash_done" not in st.session_state:
     st.session_state.splash_done = False
 
@@ -88,7 +100,6 @@ def remove_think_tags(text):
     return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
 def is_realistic_request(text):
-    """Detect if user wants a realistic/photorealistic image"""
     keywords = [
         "realistic", "photorealistic", "real", "photo", "photograph",
         "lifelike", "natural", "cinematic", "hyperrealistic", "real looking",
@@ -116,7 +127,6 @@ def extract_and_clean(text):
     return text, None, None, reuse_seed, use_realistic
 
 def generate_image_pixazo(prompt, seed=None):
-    """Fast generation with Pixazo Flux Schnell — default mode"""
     headers = {
         "Content-Type": "application/json",
         "Cache-Control": "no-cache",
@@ -145,46 +155,36 @@ def generate_image_pixazo(prompt, seed=None):
         return None, seed
 
 def generate_image_realistic(prompt, seed=None):
-    """Realistic generation with Pollinations zimage model"""
     if seed is None:
         seed = random.randint(1, 2147483647)
     try:
+        headers = {"Authorization": f"Bearer {pollinations_key}"}
+        encoded_prompt = requests.utils.quote(prompt)
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}"
         params = {
-            "model": "zimage",
+            "model": "flux-realism",
             "seed": seed,
             "width": 1024,
             "height": 1024,
             "nologo": "true"
         }
-        headers = {
-            "Authorization": f"Bearer {pollinations_key}"
-        }
-        encoded_prompt = requests.utils.quote(prompt)
-        url = f"https://gen.pollinations.ai/image/{encoded_prompt}"
-        response = requests.get(
-            url,
-            params=params,
-            headers=headers,
-            timeout=90
-        )
+        response = requests.get(url, params=params, headers=headers, timeout=90)
         if response.status_code == 200 and response.headers.get("content-type", "").startswith("image"):
             return response.content, seed
         else:
-            st.error(f"Realistic image error: {response.status_code}")
-            return None, seed
+            st.warning("Realistic mode unavailable, using standard mode instead.")
+            return generate_image_pixazo(prompt, seed)
     except Exception as e:
-        st.error(f"Realistic image error: {e}")
-        return None, seed
+        st.warning(f"Realistic mode failed, using standard: {e}")
+        return generate_image_pixazo(prompt, seed)
 
 def generate_image(prompt, seed=None, realistic=False):
-    """Route to correct image model based on request type"""
     if realistic:
         return generate_image_realistic(prompt, seed)
     else:
         return generate_image_pixazo(prompt, seed)
 
 def describe_image_for_reference(image_bytes):
-    """Use Llama 4 Scout to describe uploaded image in detail for reference generation"""
     b64 = base64.b64encode(image_bytes).decode()
     client = groq.Groq(api_key=groq_key)
     try:
@@ -242,7 +242,6 @@ def edit_image(image_bytes, edit_instruction, seed=None):
         response.raise_for_status()
         data = response.json()
         request_id = data.get("request_id") or data.get("id")
-
         if not request_id:
             output = data.get("output", [])
             if output and isinstance(output, list):
@@ -251,7 +250,6 @@ def edit_image(image_bytes, edit_instruction, seed=None):
                     return img_response.content, seed
             st.error(f"Edit response: {data}")
             return None, seed
-
         poll_headers = {"Ocp-Apim-Subscription-Key": pixazo_key}
         for _ in range(24):
             time.sleep(5)
@@ -273,7 +271,6 @@ def edit_image(image_bytes, edit_instruction, seed=None):
             elif status in ("FAILED", "ERROR"):
                 st.error(f"Edit failed: {poll_data.get('error', 'Unknown')}")
                 return None, seed
-
         st.error("Edit timed out. Please try again.")
         return None, seed
     except Exception as e:
@@ -319,7 +316,6 @@ def is_edit_request(text):
     return any(kw in text.lower() for kw in edit_keywords)
 
 def is_reference_request(text):
-    """Detect if user wants to generate something similar to uploaded image"""
     ref_keywords = [
         "similar", "like this", "same style", "inspired by", "based on this",
         "generate something like", "create something like", "make something like",
@@ -329,8 +325,8 @@ def is_reference_request(text):
     return any(kw in text.lower() for kw in ref_keywords)
 
 # ── Main App ──
-st.markdown("### Qwill AI ✨")
-st.caption("Chat, create images, or upload a photo to edit or analyse")
+st.markdown(f"### Qwill AI ✨")
+st.caption(f"Welcome, {st.user.name}! 👋")
 
 col1, col2 = st.columns([3, 1])
 with col1:
@@ -340,12 +336,14 @@ with col1:
         st.session_state.uploaded_image = None
         st.rerun()
 with col2:
-    if st.session_state.prompt_history:
-        with st.expander("📜 Prompts"):
-            for i, p in enumerate(reversed(st.session_state.prompt_history[-10:])):
-                st.caption(f"{i+1}. {p[:60]}...")
+    if st.button("Sign out"):
+        st.logout()
 
-# File upload
+if st.session_state.prompt_history:
+    with st.expander("📜 Prompts"):
+        for i, p in enumerate(reversed(st.session_state.prompt_history[-10:])):
+            st.caption(f"{i+1}. {p[:60]}...")
+
 uploaded_file = st.file_uploader(
     "📎 Upload an image to analyse, use as reference, or edit",
     type=["jpg", "jpeg", "png", "webp"],
@@ -357,7 +355,6 @@ if uploaded_file:
     st.session_state.uploaded_image = image_bytes
     st.image(image_bytes, caption="Uploaded — tell Qwill what to do with it!", width=200)
 
-# Display chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -367,7 +364,6 @@ for msg in st.session_state.messages:
             href = f'<a href="data:image/png;base64,{b64}" download="qwill_image.png">📥 Download Image</a>'
             st.markdown(href, unsafe_allow_html=True)
 
-# Chat input
 if user_input := st.chat_input("Chat with Qwill, or describe an image to create...", key="main_input"):
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
@@ -379,20 +375,14 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
         image_bytes = st.session_state.uploaded_image
 
         if is_reference_request(user_input):
-            # Reference mode — describe uploaded image then generate similar
             with st.spinner("🔍 Analysing your image..."):
                 description = describe_image_for_reference(image_bytes)
-
             if description:
-                # Combine description with any extra user instructions
                 combined_prompt = f"{description}. {user_input}" if user_input else description
                 realistic = is_realistic_request(user_input)
                 model_label = "realistic mode 📸" if realistic else "standard mode ✨"
                 with st.spinner(f"🎨 Generating similar image ({model_label})..."):
-                    new_image_bytes, used_seed = generate_image(
-                        combined_prompt,
-                        realistic=realistic
-                    )
+                    new_image_bytes, used_seed = generate_image(combined_prompt, realistic=realistic)
                 if new_image_bytes:
                     st.session_state.last_seed = used_seed
                     st.session_state.prompt_history.append(combined_prompt)
@@ -400,7 +390,6 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
             else:
                 new_image_bytes = None
                 reply_text = "Sorry, I couldn't analyse that image. Please try again."
-
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": reply_text,
@@ -415,8 +404,7 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
                     st.markdown(href, unsafe_allow_html=True)
 
         elif is_edit_request(user_input):
-            # Edit mode
-            with st.spinner("✏️ Editing your image... (may take up to 60 seconds)"):
+            with st.spinner("✏️ Editing your image..."):
                 edited_bytes, used_seed = edit_image(image_bytes, user_input)
             reply_text = "Here's your edited image! ✨" if edited_bytes else "Editing failed, please try again."
             st.session_state.messages.append({
@@ -434,7 +422,6 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
             st.session_state.uploaded_image = None
 
         else:
-            # Analysis mode
             with st.spinner("🔍 Analysing your image..."):
                 analysis = analyse_image_with_llama(image_bytes, user_input)
             reply_text = remove_think_tags(analysis)
@@ -443,10 +430,7 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
                 st.markdown(reply_text)
 
     else:
-        # No image — normal chat or image generation
-        # Also check if user is asking for realistic image directly
         realistic_from_user = is_realistic_request(user_input)
-
         client = groq.Groq(api_key=groq_key)
         response = client.chat.completions.create(
             model="qwen/qwen3-32b",
@@ -460,8 +444,6 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
         raw_reply = response.choices[0].message.content
         reply = remove_think_tags(raw_reply)
         clean_reply, final_prompt, edit_prompt, reuse_seed, realistic_from_qwill = extract_and_clean(reply)
-
-        # Either user or Qwill detected realistic intent
         use_realistic = realistic_from_user or realistic_from_qwill
 
         image_bytes = None
@@ -470,10 +452,7 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
             model_label = "realistic mode 📸" if use_realistic else "standard mode ✨"
             with st.spinner(f"✨ Creating your image ({model_label})..."):
                 image_bytes, used_seed = generate_image(
-                    final_prompt,
-                    seed=seed_to_use,
-                    realistic=use_realistic
-                )
+                    final_prompt, seed=seed_to_use, realistic=use_realistic)
             if image_bytes:
                 st.session_state.last_seed = used_seed
                 st.session_state.prompt_history.append(final_prompt)
@@ -492,4 +471,3 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
                 st.markdown(href, unsafe_allow_html=True)
             elif final_prompt:
                 st.error("Image generation failed. Please try again.")
-                
