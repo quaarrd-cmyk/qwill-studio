@@ -27,12 +27,6 @@ st.markdown("""
         padding-bottom: 100px;
     }
     section[data-testid="stSidebar"] {display: none;}
-    .upload-btn {
-        position: fixed;
-        bottom: 18px;
-        right: 70px;
-        z-index: 1000;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -55,7 +49,6 @@ if not st.session_state.splash_done:
 groq_key = st.secrets["GROQ_API_KEY"]
 pixazo_key = st.secrets["PIXAZO_API_KEY"]
 
-# System prompt
 SYSTEM_PROMPT = {
     "role": "system",
     "content": """You are Qwill, a friendly and intelligent AI assistant created by Quaarrd. You can chat, answer questions, create images, and analyse uploaded images — all in one conversation.
@@ -75,9 +68,8 @@ IMAGE CREATION RULES:
 8. ONLY output [PROMPT] tags for genuine image creation requests. Never for greetings or regular chat.
 
 IMAGE EDITING RULES (when user uploads an image):
-- If user uploads an image and asks to EDIT it (add something, change something, remove something) → output: [EDIT_PROMPT]edit instruction here[/EDIT_PROMPT]
-- If user uploads an image and asks to ANALYSE it (what is this, describe this, what do you think) → just analyse it naturally in your response, no special tags needed.
-- If user uploads an image and asks to use it as REFERENCE (create something similar, inspired by this) → treat it as a new image creation with [PROMPT] tags, mentioning the reference style."""
+- If user asks to EDIT (add, remove, change, replace, put, modify) → output: [EDIT_PROMPT]edit instruction here[/EDIT_PROMPT]
+- Never output [PROMPT] or [EDIT_PROMPT] tags for regular conversation."""
 }
 
 # Session state
@@ -87,8 +79,6 @@ if "last_seed" not in st.session_state:
     st.session_state.last_seed = None
 if "uploaded_image" not in st.session_state:
     st.session_state.uploaded_image = None
-if "uploaded_image_b64" not in st.session_state:
-    st.session_state.uploaded_image_b64 = None
 if "prompt_history" not in st.session_state:
     st.session_state.prompt_history = []
 
@@ -99,14 +89,12 @@ def extract_and_clean(text):
     reuse_seed = "[SAME_SEED]" in text
     text = text.replace("[SAME_SEED]", "").strip()
 
-    # Check for edit prompt
     edit_match = re.search(r'\[EDIT_PROMPT\](.*?)\[/EDIT_PROMPT\]', text, re.DOTALL)
     if edit_match:
         edit_prompt = edit_match.group(1).strip()
         clean = re.sub(r'\[EDIT_PROMPT\].*?\[/EDIT_PROMPT\]', '', text, flags=re.DOTALL).strip()
         return clean, None, edit_prompt, reuse_seed
 
-    # Check for image prompt
     img_match = re.search(r'\[PROMPT\](.*?)\[/PROMPT\]', text, re.DOTALL)
     if img_match:
         image_prompt = img_match.group(1).strip()
@@ -116,7 +104,6 @@ def extract_and_clean(text):
     return text, None, None, reuse_seed
 
 def generate_image(prompt, seed=None):
-    """Text to image using Pixazo Flux Schnell"""
     headers = {
         "Content-Type": "application/json",
         "Cache-Control": "no-cache",
@@ -144,15 +131,7 @@ def generate_image(prompt, seed=None):
         st.error(f"Image error: {e}")
         return None, seed
 
-def upload_image_to_pixazo(image_bytes):
-    """Upload image to get a public URL for SeeDream editing"""
-    # Convert to base64 data URL - SeeDream accepts base64
-    b64 = base64.b64encode(image_bytes).decode()
-    # Return as data URL
-    return f"data:image/jpeg;base64,{b64}"
-
 def edit_image(image_bytes, edit_instruction, seed=None):
-    """Image editing using Pixazo SeeDream 5.0 Lite Edit"""
     headers = {
         "Content-Type": "application/json",
         "Cache-Control": "no-cache",
@@ -160,13 +139,9 @@ def edit_image(image_bytes, edit_instruction, seed=None):
     }
     if seed is None:
         seed = random.randint(1, 2147483647)
-
-    # Convert image to base64
     b64 = base64.b64encode(image_bytes).decode()
     image_data_url = f"data:image/jpeg;base64,{b64}"
-
     try:
-        # Submit edit request
         response = requests.post(
             "https://gateway.pixazo.ai/seedream-5-0-lite-edit/v1/seedream-5-0-lite-edit-request",
             headers=headers,
@@ -182,11 +157,8 @@ def edit_image(image_bytes, edit_instruction, seed=None):
         )
         response.raise_for_status()
         data = response.json()
-
-        # Get request_id for polling
         request_id = data.get("request_id") or data.get("id")
 
-        # If direct output returned
         if not request_id:
             output = data.get("output", [])
             if output and isinstance(output, list):
@@ -196,7 +168,6 @@ def edit_image(image_bytes, edit_instruction, seed=None):
             st.error(f"Edit response: {data}")
             return None, seed
 
-        # Poll for result
         poll_headers = {"Ocp-Apim-Subscription-Key": pixazo_key}
         for _ in range(24):
             time.sleep(5)
@@ -207,7 +178,6 @@ def edit_image(image_bytes, edit_instruction, seed=None):
             )
             poll_data = poll.json()
             status = poll_data.get("status", "").upper()
-
             if status == "COMPLETED":
                 output = poll_data.get("output", {})
                 media_urls = output.get("media_url", []) if isinstance(output, dict) else []
@@ -222,13 +192,12 @@ def edit_image(image_bytes, edit_instruction, seed=None):
 
         st.error("Edit timed out. Please try again.")
         return None, seed
-
     except Exception as e:
         st.error(f"Edit error: {e}")
         return None, seed
 
-def analyse_image(image_bytes, user_question):
-    """Analyse image using Llama 4 Scout vision model (free on Groq)"""
+def analyse_image_with_llama(image_bytes, user_question):
+    """Always use Llama 4 Scout for any image-related question"""
     b64 = base64.b64encode(image_bytes).decode()
     client = groq.Groq(api_key=groq_key)
     try:
@@ -237,16 +206,14 @@ def analyse_image(image_bytes, user_question):
             messages=[
                 {
                     "role": "system",
-                    "content": "You are Qwill, a friendly AI assistant by Quaarrd. Analyse images helpfully and honestly."
+                    "content": "You are Qwill, a friendly AI assistant by Quaarrd. When analysing images be honest, detailed and helpful. Never say you are Llama or any other AI — you are Qwill."
                 },
                 {
                     "role": "user",
                     "content": [
                         {
                             "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{b64}"
-                            }
+                            "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
                         },
                         {
                             "type": "text",
@@ -261,6 +228,13 @@ def analyse_image(image_bytes, user_question):
     except Exception as e:
         return f"Image analysis error: {e}"
 
+def is_edit_request(text):
+    edit_keywords = ["add", "remove", "change", "replace", "put", "make it", "edit",
+                     "modify", "give", "place", "move", "delete", "insert", "turn",
+                     "make him", "make her", "make the", "add a", "put a", "give him",
+                     "give her", "take out", "erase", "swap"]
+    return any(kw in text.lower() for kw in edit_keywords)
+
 # ── Main App ──
 st.markdown("### Qwill AI ✨")
 st.caption("Chat, create images, or upload a photo to edit or analyse")
@@ -271,7 +245,6 @@ with col1:
         st.session_state.messages = []
         st.session_state.last_seed = None
         st.session_state.uploaded_image = None
-        st.session_state.uploaded_image_b64 = None
         st.rerun()
 with col2:
     if st.session_state.prompt_history:
@@ -279,18 +252,17 @@ with col2:
             for i, p in enumerate(reversed(st.session_state.prompt_history[-10:])):
                 st.caption(f"{i+1}. {p[:60]}...")
 
-# File upload
+# File upload — stays until user acts on it
 uploaded_file = st.file_uploader(
-    "📎 Upload an image",
+    "📎 Upload an image to analyse or edit",
     type=["jpg", "jpeg", "png", "webp"],
-    label_visibility="collapsed"
+    label_visibility="visible"
 )
 
 if uploaded_file:
     image_bytes = uploaded_file.read()
     st.session_state.uploaded_image = image_bytes
-    st.image(image_bytes, caption="Uploaded image", width=200)
-    st.caption("✅ Image ready — tell Qwill what to do with it!")
+    st.image(image_bytes, caption="Uploaded — tell Qwill what to do with it!", width=200)
 
 # Display chat history
 for msg in st.session_state.messages:
@@ -308,71 +280,41 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Check if image was uploaded
     has_image = st.session_state.uploaded_image is not None
 
-    # If image uploaded — decide: analyse or edit
     if has_image:
         image_bytes = st.session_state.uploaded_image
-        lower_input = user_input.lower()
 
-        # Keywords that suggest editing
-        edit_keywords = ["add", "remove", "change", "replace", "put", "make it", "edit", "modify",
-                        "give", "place", "move", "delete", "insert", "turn", "make him", "make her",
-                        "make the", "add a", "put a", "give him", "give her"]
-        # Keywords that suggest analysis
-        analyse_keywords = ["what", "describe", "analyse", "analyze", "tell me", "who", "where",
-                           "how", "explain", "identify", "is this", "what is", "what are", "opinion",
-                           "think", "look", "see", "show"]
-
-        is_edit = any(kw in lower_input for kw in edit_keywords)
-        is_analyse = any(kw in lower_input for kw in analyse_keywords)
-
-        if is_analyse and not is_edit:
-            # Pure analysis
-            with st.spinner("🔍 Analysing your image..."):
-                analysis = analyse_image(image_bytes, user_input)
-            reply_text = remove_think_tags(analysis)
-            st.session_state.messages.append({"role": "assistant", "content": reply_text})
-            with st.chat_message("assistant"):
-                st.markdown(reply_text)
-            st.session_state.uploaded_image = None
-
-        else:
-            # Edit mode — use Qwill to get edit instruction then apply
-            client = groq.Groq(api_key=groq_key)
-            response = client.chat.completions.create(
-                model="qwen/qwen3-32b",
-                messages=[SYSTEM_PROMPT] + [
-                    {"role": m["role"], "content": m["content"]}
-                    for m in st.session_state.messages
-                ],
-                temperature=0.7,
-                max_tokens=600
-            )
-            raw_reply = response.choices[0].message.content
-            reply = remove_think_tags(raw_reply)
-            clean_reply, img_prompt, edit_prompt, reuse_seed = extract_and_clean(reply)
-
-            edit_instruction = edit_prompt or user_input
+        if is_edit_request(user_input):
+            # Edit mode
             with st.spinner("✏️ Editing your image... (may take up to 60 seconds)"):
-                edited_bytes, used_seed = edit_image(image_bytes, edit_instruction)
-
+                edited_bytes, used_seed = edit_image(image_bytes, user_input)
+            reply_text = "Here's your edited image! ✨" if edited_bytes else "Editing failed, please try again."
             st.session_state.messages.append({
                 "role": "assistant",
-                "content": clean_reply or "Here's your edited image! ✨",
+                "content": reply_text,
                 "image_bytes": edited_bytes
             })
             with st.chat_message("assistant"):
-                st.markdown(clean_reply or "Here's your edited image! ✨")
+                st.markdown(reply_text)
                 if edited_bytes:
                     st.image(edited_bytes)
                     b64 = base64.b64encode(edited_bytes).decode()
                     href = f'<a href="data:image/png;base64,{b64}" download="qwill_edited.png">📥 Download Image</a>'
                     st.markdown(href, unsafe_allow_html=True)
-                else:
-                    st.error("Image editing failed. Please try again.")
+            # Clear uploaded image after editing
             st.session_state.uploaded_image = None
+
+        else:
+            # Analysis mode — use Llama 4 Scout vision
+            with st.spinner("🔍 Analysing your image..."):
+                analysis = analyse_image_with_llama(image_bytes, user_input)
+            reply_text = remove_think_tags(analysis)
+            st.session_state.messages.append({"role": "assistant", "content": reply_text})
+            with st.chat_message("assistant"):
+                st.markdown(reply_text)
+            # Keep image available for follow-up questions
+            # Only clear if user seems done with it
 
     else:
         # No image — normal chat or image generation
@@ -413,4 +355,3 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
                 st.markdown(href, unsafe_allow_html=True)
             elif final_prompt:
                 st.error("Image generation failed. Please try again.")
-
