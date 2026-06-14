@@ -486,4 +486,10 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
         with st.chat_message("assistant"):
             st.markdown(clean_reply)
             if image_bytes:
-                st.image(im
+                st.image(image_bytes)
+                b64 = base64.b64encode(image_bytes).decode()
+                href = f'<a href="data:image/png;base64,{b64}" download="qwill_image.png">📥 Download Image</a>'
+                st.markdown(href, unsafe_allow_html=True)
+            elif final_prompt:
+                st.error("Image generation failed. Please try again.")
+                
