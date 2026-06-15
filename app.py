@@ -467,4 +467,89 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
             })
             with st.chat_message("assistant"):
                 st.markdown(reply_text)
+                if edited_bytes:
+                    st.image(edited_bytes)
+                    b64 = base64.b64encode(edited_bytes).decode()
+                    href = f'<a href="data:image/png;base64,{b64}" download="qwill_edited.png">📥 Download Image</a>'
+                    st.markdown(href, unsafe_allow_html=True)
+            st.session_state.uploaded_image = None
+
+        else:
+            with st.spinner("🔍 Analysing your image..."):
+                analysis = analyse_image_with_llama(image_bytes, user_input)
+            reply_text = remove_think_tags(analysis)
+            st.session_state.messages.append({"role": "assistant", "content": reply_text})
+            with st.chat_message("assistant"):
+                st.markdown(reply_text)
+
+    else:
+        realistic_from_user = is_realistic_request(user_input)
+        variations_from_user = is_variations_request(user_input)
+        width, height = detect_aspect_ratio(user_input)
+
+        client = groq.Groq(api_key=groq_key)
+        response = client.chat.completions.create(
+            model="qwen/qwen3-32b",
+            messages=[SYSTEM_PROMPT] + [
+                {"role": m["role"], "content": m["content"]}
+                for m in st.session_state.messages
+            ],
+            temperature=0.7,
+            max_tokens=800
+        )
+        raw_reply = response.choices[0].message.content
+        reply = remove_think_tags(raw_reply)
+        clean_reply, final_prompt, edit_prompt, reuse_seed, realistic_from_qwill, portrait, landscape, variations_from_qwill = extract_and_clean(reply)
+
+        use_realistic = realistic_from_user or realistic_from_qwill
+        use_variations = variations_from_user or variations_from_qwill
+
+        if portrait:
+            width, height = 768, 1344
+        elif landscape:
+            width, height = 1344, 768
+
+        image_bytes = None
+        variations = []
+
+        if final_prompt:
+            seed_to_use = st.session_state.last_seed if reuse_seed and st.session_state.last_seed else None
+            model_label = "realistic mode 📸" if use_realistic else "standard mode ✨"
+
+            if use_variations:
+                with st.spinner(f"✨ Creating 3 variations ({model_label})..."):
+                    variations = generate_variations(final_prompt, realistic=use_realistic, width=width, height=height, count=3)
+                if variations:
+                    st.session_state.last_seed = variations[0][1]
+                    st.session_state.prompt_history.append(final_prompt)
+            else:
+                with st.spinner(f"✨ Creating your image ({model_label})..."):
+                    image_bytes, used_seed = generate_image(final_prompt, seed=seed_to_use, realistic=use_realistic, width=width, height=height)
+                if image_bytes:
+                    st.session_state.last_seed = used_seed
+                    st.session_state.prompt_history.append(final_prompt)
+
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": clean_reply,
+            "image_bytes": image_bytes,
+            "variations": variations
+        })
+        with st.chat_message("assistant"):
+            st.markdown(clean_reply)
+            if image_bytes:
+                st.image(image_bytes)
+                b64 = base64.b64encode(image_bytes).decode()
+                href = f'<a href="data:image/png;base64,{b64}" download="qwill_image.png">📥 Download Image</a>'
+                st.markdown(href, unsafe_allow_html=True)
+            elif variations:
+                cols = st.columns(len(variations))
+                for idx, (var_bytes, var_seed) in enumerate(variations):
+                    with cols[idx]:
+                        st.image(var_bytes, caption=f"Version {idx+1}")
+                        b64 = base64.b64encode(var_bytes).decode()
+                        href = f'<a href="data:image/png;base64,{b64}" download="qwill_v{idx+1}.png">📥 V{idx+1}</a>'
+                        st.markdown(href, unsafe_allow_html=True)
+            elif final_prompt:
+                st.error("Image generation failed. Please try again.")
           
