@@ -42,7 +42,7 @@ if not st.user.is_logged_in:
         st.button("Sign in with Google", on_click=st.login, use_container_width=True)
     st.stop()
 
-# ── Splash Screen (only after login) ──
+# ── Splash Screen ──
 if "splash_done" not in st.session_state:
     st.session_state.splash_done = False
 
@@ -79,7 +79,10 @@ IMAGE CREATION RULES:
 6. If user wants SAME person/character/style as before → add [SAME_SEED] in your response.
 7. Remember style preferences (dark, moody, realistic, etc.) and apply automatically to future images.
 8. ONLY output [PROMPT] tags for genuine image creation requests. Never for greetings or regular chat.
-9. If user wants a REALISTIC image (photo, real, photorealistic, lifelike, etc.) → add [REALISTIC] tag anywhere in your response.
+9. If user wants a REALISTIC image → add [REALISTIC] tag anywhere in your response.
+10. If user wants PORTRAIT orientation (tall, vertical, phone wallpaper, character) → add [PORTRAIT] tag.
+11. If user wants LANDSCAPE orientation (wide, horizontal, banner, scene, desktop) → add [LANDSCAPE] tag.
+12. If user asks for VARIATIONS (multiple versions, options, variations, different versions) → add [VARIATIONS] tag.
 
 IMAGE EDITING RULES (when user uploads an image):
 - If user asks to EDIT (add, remove, change, replace, put, modify) → output: [EDIT_PROMPT]edit instruction here[/EDIT_PROMPT]
@@ -107,26 +110,57 @@ def is_realistic_request(text):
     ]
     return any(kw in text.lower() for kw in keywords)
 
+def detect_aspect_ratio(text):
+    """Returns (width, height) based on user request"""
+    portrait_keywords = [
+        "portrait", "vertical", "tall", "phone wallpaper", "wallpaper",
+        "character", "profile", "9:16", "story", "tiktok"
+    ]
+    landscape_keywords = [
+        "landscape", "horizontal", "wide", "banner", "scene", "desktop",
+        "cover", "16:9", "cinematic", "widescreen", "youtube"
+    ]
+    text_lower = text.lower()
+    if any(kw in text_lower for kw in portrait_keywords):
+        return 768, 1344
+    elif any(kw in text_lower for kw in landscape_keywords):
+        return 1344, 768
+    else:
+        return 1024, 1024
+
+def is_variations_request(text):
+    keywords = [
+        "variations", "variation", "multiple versions", "different versions",
+        "options", "give me 3", "give me 2", "show me different",
+        "few versions", "alternatives"
+    ]
+    return any(kw in text.lower() for kw in keywords)
+
 def extract_and_clean(text):
     reuse_seed = "[SAME_SEED]" in text
     use_realistic = "[REALISTIC]" in text
-    text = text.replace("[SAME_SEED]", "").replace("[REALISTIC]", "").strip()
+    use_portrait = "[PORTRAIT]" in text
+    use_landscape = "[LANDSCAPE]" in text
+    use_variations = "[VARIATIONS]" in text
+    text = text.replace("[SAME_SEED]", "").replace("[REALISTIC]", "")
+    text = text.replace("[PORTRAIT]", "").replace("[LANDSCAPE]", "")
+    text = text.replace("[VARIATIONS]", "").strip()
 
     edit_match = re.search(r'\[EDIT_PROMPT\](.*?)\[/EDIT_PROMPT\]', text, re.DOTALL)
     if edit_match:
         edit_prompt = edit_match.group(1).strip()
         clean = re.sub(r'\[EDIT_PROMPT\].*?\[/EDIT_PROMPT\]', '', text, flags=re.DOTALL).strip()
-        return clean, None, edit_prompt, reuse_seed, use_realistic
+        return clean, None, edit_prompt, reuse_seed, use_realistic, use_portrait, use_landscape, use_variations
 
     img_match = re.search(r'\[PROMPT\](.*?)\[/PROMPT\]', text, re.DOTALL)
     if img_match:
         image_prompt = img_match.group(1).strip()
         clean = re.sub(r'\[PROMPT\].*?\[/PROMPT\]', '', text, flags=re.DOTALL).strip()
-        return clean, image_prompt, None, reuse_seed, use_realistic
+        return clean, image_prompt, None, reuse_seed, use_realistic, use_portrait, use_landscape, use_variations
 
-    return text, None, None, reuse_seed, use_realistic
+    return text, None, None, reuse_seed, use_realistic, use_portrait, use_landscape, use_variations
 
-def generate_image_pixazo(prompt, seed=None):
+def generate_image_pixazo(prompt, seed=None, width=1024, height=1024):
     headers = {
         "Content-Type": "application/json",
         "Cache-Control": "no-cache",
@@ -138,7 +172,7 @@ def generate_image_pixazo(prompt, seed=None):
         response = requests.post(
             "https://gateway.pixazo.ai/flux-1-schnell/v1/getData",
             headers=headers,
-            json={"prompt": prompt, "seed": seed},
+            json={"prompt": prompt, "seed": seed, "width": width, "height": height},
             timeout=60
         )
         response.raise_for_status()
@@ -154,7 +188,7 @@ def generate_image_pixazo(prompt, seed=None):
         st.error(f"Image error: {e}")
         return None, seed
 
-def generate_image_realistic(prompt, seed=None):
+def generate_image_realistic(prompt, seed=None, width=1024, height=1024):
     if seed is None:
         seed = random.randint(1, 2147483647)
     try:
@@ -164,8 +198,8 @@ def generate_image_realistic(prompt, seed=None):
         params = {
             "model": "flux-realism",
             "seed": seed,
-            "width": 1024,
-            "height": 1024,
+            "width": width,
+            "height": height,
             "nologo": "true"
         }
         response = requests.get(url, params=params, headers=headers, timeout=90)
@@ -173,16 +207,26 @@ def generate_image_realistic(prompt, seed=None):
             return response.content, seed
         else:
             st.warning("Realistic mode unavailable, using standard mode instead.")
-            return generate_image_pixazo(prompt, seed)
+            return generate_image_pixazo(prompt, seed, width, height)
     except Exception as e:
         st.warning(f"Realistic mode failed, using standard: {e}")
-        return generate_image_pixazo(prompt, seed)
+        return generate_image_pixazo(prompt, seed, width, height)
 
-def generate_image(prompt, seed=None, realistic=False):
+def generate_image(prompt, seed=None, realistic=False, width=1024, height=1024):
     if realistic:
-        return generate_image_realistic(prompt, seed)
+        return generate_image_realistic(prompt, seed, width, height)
     else:
-        return generate_image_pixazo(prompt, seed)
+        return generate_image_pixazo(prompt, seed, width, height)
+
+def generate_variations(prompt, realistic=False, width=1024, height=1024, count=3):
+    """Generate multiple variations with different seeds"""
+    results = []
+    for i in range(count):
+        seed = random.randint(1, 2147483647)
+        img_bytes, used_seed = generate_image(prompt, seed=seed, realistic=realistic, width=width, height=height)
+        if img_bytes:
+            results.append((img_bytes, used_seed))
+    return results
 
 def describe_image_for_reference(image_bytes):
     b64 = base64.b64encode(image_bytes).decode()
@@ -325,7 +369,7 @@ def is_reference_request(text):
     return any(kw in text.lower() for kw in ref_keywords)
 
 # ── Main App ──
-st.markdown(f"### Qwill AI ✨")
+st.markdown("### Qwill AI ✨")
 st.caption(f"Welcome, {st.user.name}! 👋")
 
 col1, col2 = st.columns([3, 1])
@@ -363,6 +407,14 @@ for msg in st.session_state.messages:
             b64 = base64.b64encode(msg["image_bytes"]).decode()
             href = f'<a href="data:image/png;base64,{b64}" download="qwill_image.png">📥 Download Image</a>'
             st.markdown(href, unsafe_allow_html=True)
+        if "variations" in msg and msg["variations"]:
+            cols = st.columns(len(msg["variations"]))
+            for idx, (var_bytes, var_seed) in enumerate(msg["variations"]):
+                with cols[idx]:
+                    st.image(var_bytes, caption=f"Version {idx+1}")
+                    b64 = base64.b64encode(var_bytes).decode()
+                    href = f'<a href="data:image/png;base64,{b64}" download="qwill_v{idx+1}.png">📥 V{idx+1}</a>'
+                    st.markdown(href, unsafe_allow_html=True)
 
 if user_input := st.chat_input("Chat with Qwill, or describe an image to create...", key="main_input"):
     st.session_state.messages.append({"role": "user", "content": user_input})
@@ -380,9 +432,10 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
             if description:
                 combined_prompt = f"{description}. {user_input}" if user_input else description
                 realistic = is_realistic_request(user_input)
+                width, height = detect_aspect_ratio(user_input)
                 model_label = "realistic mode 📸" if realistic else "standard mode ✨"
                 with st.spinner(f"🎨 Generating similar image ({model_label})..."):
-                    new_image_bytes, used_seed = generate_image(combined_prompt, realistic=realistic)
+                    new_image_bytes, used_seed = generate_image(combined_prompt, realistic=realistic, width=width, height=height)
                 if new_image_bytes:
                     st.session_state.last_seed = used_seed
                     st.session_state.prompt_history.append(combined_prompt)
@@ -414,60 +467,4 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
             })
             with st.chat_message("assistant"):
                 st.markdown(reply_text)
-                if edited_bytes:
-                    st.image(edited_bytes)
-                    b64 = base64.b64encode(edited_bytes).decode()
-                    href = f'<a href="data:image/png;base64,{b64}" download="qwill_edited.png">📥 Download Image</a>'
-                    st.markdown(href, unsafe_allow_html=True)
-            st.session_state.uploaded_image = None
-
-        else:
-            with st.spinner("🔍 Analysing your image..."):
-                analysis = analyse_image_with_llama(image_bytes, user_input)
-            reply_text = remove_think_tags(analysis)
-            st.session_state.messages.append({"role": "assistant", "content": reply_text})
-            with st.chat_message("assistant"):
-                st.markdown(reply_text)
-
-    else:
-        realistic_from_user = is_realistic_request(user_input)
-        client = groq.Groq(api_key=groq_key)
-        response = client.chat.completions.create(
-            model="qwen/qwen3-32b",
-            messages=[SYSTEM_PROMPT] + [
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ],
-            temperature=0.7,
-            max_tokens=800
-        )
-        raw_reply = response.choices[0].message.content
-        reply = remove_think_tags(raw_reply)
-        clean_reply, final_prompt, edit_prompt, reuse_seed, realistic_from_qwill = extract_and_clean(reply)
-        use_realistic = realistic_from_user or realistic_from_qwill
-
-        image_bytes = None
-        if final_prompt:
-            seed_to_use = st.session_state.last_seed if reuse_seed and st.session_state.last_seed else None
-            model_label = "realistic mode 📸" if use_realistic else "standard mode ✨"
-            with st.spinner(f"✨ Creating your image ({model_label})..."):
-                image_bytes, used_seed = generate_image(
-                    final_prompt, seed=seed_to_use, realistic=use_realistic)
-            if image_bytes:
-                st.session_state.last_seed = used_seed
-                st.session_state.prompt_history.append(final_prompt)
-
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": clean_reply,
-            "image_bytes": image_bytes
-        })
-        with st.chat_message("assistant"):
-            st.markdown(clean_reply)
-            if image_bytes:
-                st.image(image_bytes)
-                b64 = base64.b64encode(image_bytes).decode()
-                href = f'<a href="data:image/png;base64,{b64}" download="qwill_image.png">📥 Download Image</a>'
-                st.markdown(href, unsafe_allow_html=True)
-            elif final_prompt:
-                st.error("Image generation failed. Please try again.")
+          
