@@ -30,7 +30,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Login Gate ──
 if not st.user.is_logged_in:
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
@@ -42,7 +41,6 @@ if not st.user.is_logged_in:
         st.button("Sign in with Google", on_click=st.login, use_container_width=True)
     st.stop()
 
-# ── Splash Screen ──
 if "splash_done" not in st.session_state:
     st.session_state.splash_done = False
 
@@ -57,14 +55,13 @@ if not st.session_state.splash_done:
     st.session_state.splash_done = True
     st.rerun()
 
-# API Keys
 groq_key = st.secrets["GROQ_API_KEY"]
 pixazo_key = st.secrets["PIXAZO_API_KEY"]
 pollinations_key = st.secrets["POLLINATIONS_API_KEY"]
 
 SYSTEM_PROMPT = {
     "role": "system",
-    "content": """You are Qwill, a friendly and intelligent AI assistant created by Quaarrd. You can chat, answer questions, create images, and analyse uploaded images — all in one conversation.
+    "content": """You are Qwill, a friendly and intelligent AI assistant created by Quaarrd. You can chat, answer questions, create images, and analyse uploaded images all in one conversation.
 
 IDENTITY:
 - You are Qwill, made by Quaarrd. NEVER say you are Qwen, Llama, or any other AI.
@@ -73,24 +70,23 @@ IDENTITY:
 
 IMAGE CREATION RULES:
 1. When a user asks for an image, ask a MAXIMUM of 1-2 short questions. No long lists.
-2. After one round of clarification OR if user says "go ahead", "generate", "create it", "just do it", "yes", "okay", "whatever you choose" → IMMEDIATELY generate. No more questions.
-3. When ready to generate say ONLY: "Great! I'll create that now ✨" then output: [PROMPT]detailed image description here[/PROMPT]
+2. After one round of clarification OR if user says go ahead, generate, create it, just do it, yes, okay, whatever you choose, IMMEDIATELY generate. No more questions.
+3. When ready to generate say ONLY: Great! I'll create that now then output: [PROMPT]detailed image description here[/PROMPT]
 4. NEVER show the prompt text to the user. It is hidden.
-5. For small changes or "same person" requests → generate immediately without asking.
-6. If user wants SAME person/character/style as before → add [SAME_SEED] in your response.
-7. Remember style preferences (dark, moody, realistic, etc.) and apply automatically to future images.
+5. For small changes or same person requests, generate immediately without asking.
+6. If user wants SAME person/character/style as before, add [SAME_SEED] in your response.
+7. Remember style preferences and apply automatically to future images.
 8. ONLY output [PROMPT] tags for genuine image creation requests. Never for greetings or regular chat.
-9. If user wants a REALISTIC image → add [REALISTIC] tag anywhere in your response.
-10. If user wants PORTRAIT orientation (tall, vertical, phone wallpaper, character) → add [PORTRAIT] tag.
-11. If user wants LANDSCAPE orientation (wide, horizontal, banner, scene, desktop) → add [LANDSCAPE] tag.
-12. ONLY add [VARIATIONS] tag if user explicitly says "variations", "multiple versions", "give me 2", "give me 3", or "different versions". NEVER add [VARIATIONS] for any other request.
+9. If user wants a REALISTIC image, add [REALISTIC] tag anywhere in your response.
+10. If user wants PORTRAIT orientation (tall, vertical, phone wallpaper, character), add [PORTRAIT] tag.
+11. If user wants LANDSCAPE orientation (wide, horizontal, banner, scene, desktop), add [LANDSCAPE] tag.
+12. ONLY add [VARIATIONS] tag if user explicitly says variations, multiple versions, give me 2, give me 3, or different versions. NEVER add [VARIATIONS] for any other request.
 
-IMAGE EDITING RULES (when user uploads an image):
-- If user asks to EDIT (add, remove, change, replace, put, modify) → output: [EDIT_PROMPT]edit instruction here[/EDIT_PROMPT]
+IMAGE EDITING RULES:
+- If user asks to EDIT an uploaded image (add, remove, change, replace, put, modify), output: [EDIT_PROMPT]edit instruction here[/EDIT_PROMPT]
 - Never output [PROMPT] or [EDIT_PROMPT] tags for regular conversation."""
 }
 
-# Session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "last_seed" not in st.session_state:
@@ -104,22 +100,16 @@ def remove_think_tags(text):
     return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
 def is_realistic_request(text):
-    keywords = [
-        "realistic", "photorealistic", "real", "photo", "photograph",
-        "lifelike", "natural", "cinematic", "hyperrealistic", "real looking",
-        "looks real", "like a photo", "look real", "actual photo"
-    ]
+    keywords = ["realistic", "photorealistic", "real", "photo", "photograph",
+                "lifelike", "natural", "cinematic", "hyperrealistic", "real looking",
+                "looks real", "like a photo", "look real", "actual photo"]
     return any(kw in text.lower() for kw in keywords)
 
 def detect_aspect_ratio(text):
-    portrait_keywords = [
-        "portrait", "vertical", "tall", "phone wallpaper", "wallpaper",
-        "character", "profile", "9:16", "story", "tiktok"
-    ]
-    landscape_keywords = [
-        "landscape", "horizontal", "wide", "banner", "scene", "desktop",
-        "cover", "16:9", "cinematic", "widescreen", "youtube"
-    ]
+    portrait_keywords = ["portrait", "vertical", "tall", "phone wallpaper", "wallpaper",
+                        "profile", "9:16", "story", "tiktok"]
+    landscape_keywords = ["landscape", "horizontal", "wide", "banner", "scene", "desktop",
+                         "cover", "16:9", "cinematic", "widescreen", "youtube"]
     text_lower = text.lower()
     if any(kw in text_lower for kw in portrait_keywords):
         return 768, 1344
@@ -129,11 +119,8 @@ def detect_aspect_ratio(text):
         return 1024, 1024
 
 def is_variations_request(text):
-    keywords = [
-        "variations", "variation", "multiple versions", "different versions",
-        "give me 3", "give me 2", "show me different",
-        "few versions", "alternatives"
-    ]
+    keywords = ["variations", "variation", "multiple versions", "different versions",
+                "give me 3", "give me 2", "show me different", "few versions", "alternatives"]
     return any(kw in text.lower() for kw in keywords)
 
 def extract_and_clean(text):
@@ -195,13 +182,7 @@ def generate_image_realistic(prompt, seed=None, width=1024, height=1024):
         headers = {"Authorization": f"Bearer {pollinations_key}"}
         encoded_prompt = requests.utils.quote(prompt)
         url = f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-        params = {
-            "model": "flux-realism",
-            "seed": seed,
-            "width": width,
-            "height": height,
-            "nologo": "true"
-        }
+        params = {"model": "flux-realism", "seed": seed, "width": width, "height": height, "nologo": "true"}
         response = requests.get(url, params=params, headers=headers, timeout=90)
         if response.status_code == 200 and response.headers.get("content-type", "").startswith("image"):
             return response.content, seed
@@ -236,19 +217,13 @@ def describe_image_for_reference(image_bytes):
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an expert image describer. Describe the uploaded image in rich detail for use as an AI image generation prompt. Include: subjects, colors, lighting, style, mood, composition, background, textures, and any other visual details. Be specific and detailed. Output ONLY the description, nothing else."
+                    "content": "You are an expert image describer. Describe the uploaded image in rich detail for use as an AI image generation prompt. Include: subjects, colors, lighting, style, mood, composition, background, textures, and any other visual details. Output ONLY the description, nothing else."
                 },
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
-                        },
-                        {
-                            "type": "text",
-                            "text": "Describe this image in rich detail for AI image generation."
-                        }
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                        {"type": "text", "text": "Describe this image in rich detail for AI image generation."}
                     ]
                 }
             ],
@@ -272,14 +247,8 @@ def edit_image(image_bytes, edit_instruction, seed=None):
         response = requests.post(
             "https://gateway.pixazo.ai/seedream-5-0-lite-edit/v1/seedream-5-0-lite-edit-request",
             headers=headers,
-            json={
-                "prompt": edit_instruction,
-                "image_urls": [image_data_url],
-                "image_size": "square_hd",
-                "num_images": 1,
-                "seed": seed,
-                "enable_safety_checker": True
-            },
+            json={"prompt": edit_instruction, "image_urls": [image_data_url],
+                  "image_size": "square_hd", "num_images": 1, "seed": seed, "enable_safety_checker": True},
             timeout=30
         )
         response.raise_for_status()
@@ -298,9 +267,7 @@ def edit_image(image_bytes, edit_instruction, seed=None):
             time.sleep(5)
             poll = requests.get(
                 f"https://gateway.pixazo.ai/v2/requests/status/{request_id}",
-                headers=poll_headers,
-                timeout=15
-            )
+                headers=poll_headers, timeout=15)
             poll_data = poll.json()
             status = poll_data.get("status", "").upper()
             if status == "COMPLETED":
@@ -327,23 +294,11 @@ def analyse_image_with_llama(image_bytes, user_question):
         response = client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are Qwill, a friendly AI assistant by Quaarrd. When analysing images be honest, detailed and helpful. Never say you are Llama or any other AI — you are Qwill."
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
-                        },
-                        {
-                            "type": "text",
-                            "text": user_question
-                        }
-                    ]
-                }
+                {"role": "system", "content": "You are Qwill, a friendly AI assistant by Quaarrd. When analysing images be honest, detailed and helpful. Never say you are Llama or any other AI. You are Qwill."},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                    {"type": "text", "text": user_question}
+                ]}
             ],
             max_tokens=1000
         )
@@ -359,16 +314,12 @@ def is_edit_request(text):
     return any(kw in text.lower() for kw in edit_keywords)
 
 def is_reference_request(text):
-    ref_keywords = [
-        "similar", "like this", "same style", "inspired by", "based on this",
-        "generate something like", "create something like", "make something like",
-        "use this as reference", "reference", "in this style", "like the image",
-        "something similar", "same vibe", "same mood", "recreate"
-    ]
+    ref_keywords = ["similar", "like this", "same style", "inspired by", "based on this",
+                    "generate something like", "create something like", "make something like",
+                    "use this as reference", "reference", "in this style", "like the image",
+                    "something similar", "same vibe", "same mood", "recreate"]
     return any(kw in text.lower() for kw in ref_keywords)
-
-# ── Main App ──
-st.markdown("### Qwill AI ✨")
+    st.markdown("### Qwill AI ✨")
 st.caption(f"Welcome, {st.user.name}! 👋")
 
 col1, col2 = st.columns([3, 1])
@@ -456,7 +407,6 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
                     st.markdown(href, unsafe_allow_html=True)
 
         elif is_edit_request(user_input):
-            elif is_edit_request(user_input):
             with st.spinner("✏️ Editing your image..."):
                 edited_bytes, used_seed = edit_image(image_bytes, user_input)
             reply_text = "Here's your edited image! ✨" if edited_bytes else "Editing failed, please try again."
