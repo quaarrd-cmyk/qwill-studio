@@ -464,7 +464,7 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
                 "content": reply_text,
                 "image_bytes": edited_bytes
             })
-            "assistant"):
+            with st.chat_message("assistant"):
             st.markdown(reply_text)
             if edited_bytes:
                 st.image(edited_bytes)
