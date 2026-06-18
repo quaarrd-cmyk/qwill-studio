@@ -6,18 +6,22 @@ import requests
 import re
 import random
 
+# ── Firebase ──────────────────────────────────────────────────────────────────
 import firebase_admin
 from firebase_admin import credentials, firestore
 
 def get_db():
+    """Initialise Firebase app once and return Firestore client."""
     if not firebase_admin._apps:
         firebase_secrets = dict(st.secrets["firebase"])
+        # Streamlit stores the private key with literal \n — fix that
         firebase_secrets["private_key"] = firebase_secrets["private_key"].replace("\\n", "\n")
         cred = credentials.Certificate(firebase_secrets)
         firebase_admin.initialize_app(cred)
     return firestore.client()
 
 def load_chat_history(user_email: str):
+    """Load saved messages for this user from Firestore (text only — images not stored)."""
     try:
         db = get_db()
         doc = db.collection("chat_history").document(user_email).get()
@@ -29,11 +33,16 @@ def load_chat_history(user_email: str):
     return []
 
 def save_chat_history(user_email: str, messages: list):
+    """Save text messages for this user to Firestore (images excluded — too large)."""
     try:
         db = get_db()
+        # Strip image/variation bytes before saving — store text only
         clean = []
         for m in messages:
-            clean.append({"role": m["role"], "content": m["content"]})
+            clean.append({
+                "role": m["role"],
+                "content": m["content"]
+            })
         db.collection("chat_history").document(user_email).set({
             "messages": clean,
             "updated_at": firestore.SERVER_TIMESTAMP
@@ -41,7 +50,12 @@ def save_chat_history(user_email: str, messages: list):
     except Exception as e:
         st.warning(f"Could not save chat history: {e}")
 
-st.set_page_config(page_title="Qwill AI", page_icon="✨", layout="centered")
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Qwill AI",
+    page_icon="✨",
+    layout="centered"
+)
 
 st.markdown("""
 <style>
@@ -61,20 +75,26 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ── Helper: crisp logo via base64 HTML ────────────────────────────────────────
 def crisp_logo(path: str, width: int):
+    """Render a logo file as a crisp, non-blurry HTML img tag."""
     try:
         with open(path, "rb") as f:
             b64 = base64.b64encode(f.read()).decode()
         ext = path.rsplit(".", 1)[-1].lower()
         mime = "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
         st.markdown(
-            f'<div style="text-align:center"><img src="data:{mime};base64,{b64}" '
+            f'<div style="text-align:center">'
+            f'<img src="data:{mime};base64,{b64}" '
             f'style="width:{width}px;height:{width}px;object-fit:contain;'
-            f'image-rendering:crisp-edges;display:block;margin:auto;"></div>',
-            unsafe_allow_html=True)
+            f'image-rendering:crisp-edges;image-rendering:-webkit-optimize-contrast;display:block;margin:auto;">'
+            f'</div>',
+            unsafe_allow_html=True
+        )
     except Exception:
-        st.image(path, width=width)
+        st.image(path, width=width)   # graceful fallback
 
+# ── Login screen ──────────────────────────────────────────────────────────────
 if not st.user.is_logged_in:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -86,6 +106,7 @@ if not st.user.is_logged_in:
         st.button("Sign in with Google", on_click=st.login, use_container_width=True)
     st.stop()
 
+# ── Splash screen ─────────────────────────────────────────────────────────────
 if "splash_done" not in st.session_state:
     st.session_state.splash_done = False
 
@@ -100,10 +121,12 @@ if not st.session_state.splash_done:
     st.session_state.splash_done = True
     st.rerun()
 
-groq_key = st.secrets["GROQ_API_KEY"]
-pixazo_key = st.secrets["PIXAZO_API_KEY"]
+# ── Secrets ───────────────────────────────────────────────────────────────────
+groq_key        = st.secrets["GROQ_API_KEY"]
+pixazo_key      = st.secrets["PIXAZO_API_KEY"]
 pollinations_key = st.secrets["POLLINATIONS_API_KEY"]
 
+# ── System prompt (hardened against identity/image-creation denial) ───────────
 SYSTEM_PROMPT = {
     "role": "system",
     "content": """You are Qwill, a friendly and intelligent AI assistant created by Quaarrd. You can chat, answer questions, CREATE IMAGES, and analyse uploaded images all in one conversation.
@@ -117,7 +140,7 @@ IDENTITY — CRITICAL, NEVER BREAK THESE RULES:
 IMAGE CREATION — FOLLOW EXACTLY:
 1. When asked for an image, ask a MAXIMUM of 1 short clarifying question if truly needed. Skip questions entirely if the request is already clear.
 2. After ONE round of clarification, or if user says anything like "go ahead / create it / yes / okay / just do it / whatever you choose / sure" — generate IMMEDIATELY. No more questions.
-3. When ready, say ONLY: "Great! I'll create that now" then output: [PROMPT]detailed image description here[/PROMPT]
+3. When ready, say ONLY: "Great! I'll create that now ✨" then on the next line output: [PROMPT]detailed image description here[/PROMPT]
 4. NEVER show the [PROMPT] tags or their contents to the user. They are hidden processing tags.
 5. For small changes or follow-up requests about the same subject, generate immediately without asking.
 6. If user wants the SAME person/character/style as a previous image, add [SAME_SEED] anywhere in your response.
@@ -126,17 +149,24 @@ IMAGE CREATION — FOLLOW EXACTLY:
 9. For REALISTIC images (photo, photograph, real, lifelike, cinematic, hyperrealistic), add [REALISTIC] tag.
 10. For PORTRAIT orientation (tall, vertical, phone wallpaper, character close-up, 9:16), add [PORTRAIT] tag.
 11. For LANDSCAPE orientation (wide, horizontal, banner, desktop wallpaper, scene, 16:9), add [LANDSCAPE] tag.
-12. ONLY add [VARIATIONS] tag when user EXPLICITLY uses one of these exact phrases: "variations", "variation", "multiple versions", "different versions", "give me 2", "give me 3", "show me different versions", "few versions", "alternatives". For ALL other requests NEVER add [VARIATIONS].
+12. ONLY add [VARIATIONS] tag when user EXPLICITLY uses one of these exact phrases: "variations", "variation", "multiple versions", "different versions", "give me 2", "give me 3", "show me different versions", "few versions", "alternatives". For ALL other requests — including "create", "generate", "make", "draw" — NEVER add [VARIATIONS].
 
 IMAGE EDITING:
 - If user asks to EDIT an uploaded image (add, remove, change, replace, modify), output: [EDIT_PROMPT]edit instruction here[/EDIT_PROMPT]
 - Never output both [PROMPT] and [EDIT_PROMPT] at the same time."""
 }
 
-user_email = st.user.email
+# ── Session state init ────────────────────────────────────────────────────────
+user_email = st.user.email  # unique key per user for Firestore
+
+if "history_loaded" not in st.session_state:
+    st.session_state.history_loaded = False
 
 if "messages" not in st.session_state:
+    # Load saved history on first run after login
     st.session_state.messages = load_chat_history(user_email)
+    st.session_state.history_loaded = True
+
 if "last_seed" not in st.session_state:
     st.session_state.last_seed = None
 if "uploaded_image" not in st.session_state:
@@ -144,6 +174,7 @@ if "uploaded_image" not in st.session_state:
 if "prompt_history" not in st.session_state:
     st.session_state.prompt_history = []
 
+# ── Utility functions ─────────────────────────────────────────────────────────
 def remove_think_tags(text):
     return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
@@ -166,33 +197,42 @@ def detect_aspect_ratio(text):
     return 1024, 1024
 
 def is_variations_request(text):
+    """Strict check — only explicit variation keywords trigger this."""
     t = text.lower().strip()
-    exact_phrases = ["variations", "variation", "multiple versions", "different versions",
-                     "few versions", "alternatives", "give me 2", "give me 3",
-                     "show me different versions", "show me 2", "show me 3"]
+    exact_phrases = [
+        "variations", "variation", "multiple versions", "different versions",
+        "few versions", "alternatives", "give me 2", "give me 3",
+        "show me different versions", "show me 2", "show me 3"
+    ]
     return any(phrase in t for phrase in exact_phrases)
 
 def extract_and_clean(text):
-    reuse_seed     = "[SAME_SEED]"  in text
-    use_realistic  = "[REALISTIC]"  in text
-    use_portrait   = "[PORTRAIT]"   in text
-    use_landscape  = "[LANDSCAPE]"  in text
-    use_variations = "[VARIATIONS]" in text
+    reuse_seed      = "[SAME_SEED]"   in text
+    use_realistic   = "[REALISTIC]"   in text
+    use_portrait    = "[PORTRAIT]"    in text
+    use_landscape   = "[LANDSCAPE]"   in text
+    use_variations  = "[VARIATIONS]"  in text
+
     for tag in ["[SAME_SEED]", "[REALISTIC]", "[PORTRAIT]", "[LANDSCAPE]", "[VARIATIONS]"]:
         text = text.replace(tag, "")
     text = text.strip()
+
     edit_match = re.search(r'\[EDIT_PROMPT\](.*?)\[/EDIT_PROMPT\]', text, re.DOTALL)
     if edit_match:
         edit_prompt = edit_match.group(1).strip()
         clean = re.sub(r'\[EDIT_PROMPT\].*?\[/EDIT_PROMPT\]', '', text, flags=re.DOTALL).strip()
         return clean, None, edit_prompt, reuse_seed, use_realistic, use_portrait, use_landscape, use_variations
+
     img_match = re.search(r'\[PROMPT\](.*?)\[/PROMPT\]', text, re.DOTALL)
     if img_match:
         image_prompt = img_match.group(1).strip()
         clean = re.sub(r'\[PROMPT\].*?\[/PROMPT\]', '', text, flags=re.DOTALL).strip()
         return clean, image_prompt, None, reuse_seed, use_realistic, use_portrait, use_landscape, use_variations
+
     return text, None, None, reuse_seed, use_realistic, use_portrait, use_landscape, use_variations
-    def generate_image_pixazo(prompt, seed=None, width=1024, height=1024):
+
+# ── Image generation ──────────────────────────────────────────────────────────
+def generate_image_pixazo(prompt, seed=None, width=1024, height=1024):
     headers = {
         "Content-Type": "application/json",
         "Cache-Control": "no-cache",
@@ -239,7 +279,8 @@ def generate_image_realistic(prompt, seed=None, width=1024, height=1024):
         return generate_image_pixazo(prompt, seed, width, height)
 
 def generate_image(prompt, seed=None, realistic=False, width=1024, height=1024):
-    return generate_image_realistic(prompt, seed, width, height) if realistic else generate_image_pixazo(prompt, seed, width, height)
+    return generate_image_realistic(prompt, seed, width, height) if realistic \
+           else generate_image_pixazo(prompt, seed, width, height)
 
 def generate_variations(prompt, realistic=False, width=1024, height=1024, count=3):
     results = []
@@ -250,6 +291,7 @@ def generate_variations(prompt, realistic=False, width=1024, height=1024, count=
             results.append((img_bytes, used_seed))
     return results
 
+# ── Vision / reference / edit helpers ────────────────────────────────────────
 def describe_image_for_reference(image_bytes):
     b64 = base64.b64encode(image_bytes).decode()
     client = groq.Groq(api_key=groq_key)
@@ -356,6 +398,7 @@ def is_reference_request(text):
                     "something similar", "same vibe", "same mood", "recreate"]
     return any(kw in text.lower() for kw in ref_keywords)
 
+# ── Main UI ───────────────────────────────────────────────────────────────────
 st.markdown("### Qwill AI ✨")
 st.caption(f"Welcome, {st.user.name}! 👋")
 
@@ -365,7 +408,7 @@ with col1:
         st.session_state.messages = []
         st.session_state.last_seed = None
         st.session_state.uploaded_image = None
-        save_chat_history(user_email, [])
+        save_chat_history(user_email, [])   # clear Firestore too
         st.rerun()
 with col2:
     if st.button("Sign out"):
@@ -387,6 +430,7 @@ if uploaded_file:
     st.session_state.uploaded_image = image_bytes
     st.image(image_bytes, caption="Uploaded — tell Qwill what to do with it!", width=200)
 
+# Display existing chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -404,6 +448,7 @@ for msg in st.session_state.messages:
                     href = f'<a href="data:image/png;base64,{b64}" download="qwill_v{idx+1}.png">📥 V{idx+1}</a>'
                     st.markdown(href, unsafe_allow_html=True)
 
+# ── Chat input ────────────────────────────────────────────────────────────────
 if user_input := st.chat_input("Chat with Qwill, or describe an image to create...", key="main_input"):
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
@@ -413,6 +458,7 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
 
     if has_image:
         image_bytes = st.session_state.uploaded_image
+
         if is_reference_request(user_input):
             with st.spinner("🔍 Analysing your image..."):
                 description = describe_image_for_reference(image_bytes)
@@ -442,6 +488,7 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
                     b64 = base64.b64encode(new_image_bytes).decode()
                     href = f'<a href="data:image/png;base64,{b64}" download="qwill_reference.png">📥 Download Image</a>'
                     st.markdown(href, unsafe_allow_html=True)
+
         elif is_edit_request(user_input):
             with st.spinner("✏️ Editing your image..."):
                 edited_bytes, used_seed = edit_image(image_bytes, user_input)
@@ -459,6 +506,7 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
                     href = f'<a href="data:image/png;base64,{b64}" download="qwill_edited.png">📥 Download Image</a>'
                     st.markdown(href, unsafe_allow_html=True)
             st.session_state.uploaded_image = None
+
         else:
             with st.spinner("🔍 Analysing your image..."):
                 analysis = analyse_image_with_llama(image_bytes, user_input)
@@ -466,10 +514,12 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
             st.session_state.messages.append({"role": "assistant", "content": reply_text})
             with st.chat_message("assistant"):
                 st.markdown(reply_text)
+
     else:
-        realistic_from_user = is_realistic_request(user_input)
+        realistic_from_user  = is_realistic_request(user_input)
         variations_from_user = is_variations_request(user_input)
         width, height = detect_aspect_ratio(user_input)
+
         client = groq.Groq(api_key=groq_key)
         response = client.chat.completions.create(
             model="qwen/qwen3-32b",
@@ -483,17 +533,23 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
         raw_reply = response.choices[0].message.content
         reply = remove_think_tags(raw_reply)
         clean_reply, final_prompt, edit_prompt, reuse_seed, realistic_from_qwill, portrait, landscape, variations_from_qwill = extract_and_clean(reply)
-        use_realistic = realistic_from_user or realistic_from_qwill
+
+        use_realistic  = realistic_from_user  or realistic_from_qwill
+        # Variations: only trust the USER-side check (Qwill tag is extra safety)
         use_variations = variations_from_user or variations_from_qwill
+
         if portrait:
             width, height = 768, 1344
         elif landscape:
             width, height = 1344, 768
+
         image_bytes_out = None
         variations = []
+
         if final_prompt:
             seed_to_use = st.session_state.last_seed if reuse_seed and st.session_state.last_seed else None
             model_label = "realistic mode 📸" if use_realistic else "standard mode ✨"
+
             if use_variations:
                 with st.spinner(f"✨ Creating 3 variations ({model_label})..."):
                     variations = generate_variations(final_prompt, realistic=use_realistic, width=width, height=height, count=3)
@@ -506,12 +562,14 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
                 if image_bytes_out:
                     st.session_state.last_seed = used_seed
                     st.session_state.prompt_history.append(final_prompt)
+
         st.session_state.messages.append({
             "role": "assistant",
             "content": clean_reply,
             "image_bytes": image_bytes_out,
             "variations": variations
         })
+
         with st.chat_message("assistant"):
             st.markdown(clean_reply)
             if image_bytes_out:
@@ -530,4 +588,5 @@ if user_input := st.chat_input("Chat with Qwill, or describe an image to create.
             elif final_prompt:
                 st.error("Image generation failed. Please try again.")
 
+    # ── Save to Firestore after every exchange ────────────────────────────────
     save_chat_history(user_email, st.session_state.messages)
